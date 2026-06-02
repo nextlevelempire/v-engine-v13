@@ -33,7 +33,8 @@
     "smoke:action-log": "tsx tests/action-log-smoke.ts",
     "smoke:screenshots": "tsx tests/screenshots-smoke.ts",
     "smoke:webhooks": "tsx tests/webhooks-smoke.ts",
-    "smoke:tenant-scoping": "tsx tests/tenant-scoping-smoke.ts"
+    "smoke:tenant-scoping": "tsx tests/tenant-scoping-smoke.ts",
+    "smoke:deploy": "tsx tests/deploy-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",

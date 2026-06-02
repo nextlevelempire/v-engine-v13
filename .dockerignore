@@ -1,0 +1,27 @@
+# Build artifacts
+dist/
+node_modules/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Test artifacts
+.omni-smoke-home/
+coverage/
+*.log
+
+# Local env
+.env
+.env.local
+.env.*.local
+
+# Local data / browser state
+/tmp/
+/data/
+
+# Secrets (never commit)
+*.pem
+*.key
+secrets/
