@@ -147,7 +147,12 @@ export class OmniStandaloneService {
       getMissionLogsDir(input.userId ?? undefined),
     );
     const sessionPersistence = new OmniSessionPersistence(getSessionStateRootDir(input.userId ?? undefined));
-    const sessionManager = new OmniSessionManager();
+    // Use the same OMNI_MAX_PARALLEL_SESSIONS env var as the global cap so
+    // operators have one source of truth. The session-manager's per-instance
+    // sub-session cap is independent of the global service cap, but tying
+    // them to the same env var prevents surprise inconsistencies.
+    const parallelCap = numberFromEnv("OMNI_MAX_PARALLEL_SESSIONS", 50);
+    const sessionManager = new OmniSessionManager({ maxParallelSessions: parallelCap });
     const core = new OmniCoreClone({
       proofCapture,
       sessionManager,
@@ -708,7 +713,7 @@ export class OmniStandaloneService {
   }
 
   private async enforceSessionCap(): Promise<void> {
-    const cap = numberFromEnv("OMNI_MAX_SESSIONS", 5);
+    const cap = numberFromEnv("OMNI_MAX_PARALLEL_SESSIONS", 50);
     if (this.sessions.size < cap) {
       return;
     }
@@ -716,6 +721,14 @@ export class OmniStandaloneService {
       (left, right) => Date.parse(left.lastActiveAt) - Date.parse(right.lastActiveAt),
     )[0];
     if (oldest) {
+      // Emit session.evicted before closing so SSE listeners can observe the
+      // eviction. Previously this was a silent cap — operators had no way to
+      // tell why their session disappeared.
+      this.emit(oldest, "session.evicted", {
+        reason: "parallel_cap",
+        cap,
+        currentSize: this.sessions.size,
+      });
       await this.closeSession(oldest.sessionId);
     }
   }

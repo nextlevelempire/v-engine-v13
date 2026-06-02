@@ -225,7 +225,11 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
         ? 401
         : /budget/i.test(message)
           ? 402
-          : 500;
+          : /not\s*found|unknown\s+omni\s+session|does\s+not\s+exist/i.test(message)
+            ? 404
+            : /rate\s*limit|too\s*many|throttl/i.test(message)
+              ? 429
+              : 500;
       return writeJson(response, statusCode, {
         error: message,
         ok: false,

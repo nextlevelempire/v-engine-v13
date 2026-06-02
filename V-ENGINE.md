@@ -159,8 +159,10 @@ All env vars use the `OMNI_*` prefix. This is the V-Engine's own naming conventi
 | `OMNI_SESSION_RPM` | `60` | Per-session requests/minute |
 | `OMNI_DASHBOARD_JWT_SECRET` | (dev fallback) | HMAC secret for runtime grants |
 | `OMNI_ALLOW_HEADLESS_FALLBACK` | `0` | Allow headless if visible Chrome launch fails |
+| `OMNI_LISTEN_HOST` | `127.0.0.1` | Bind address. Default loopback for safety. Set to `0.0.0.0` to expose. |
+| `OMNI_MAX_PARALLEL_SESSIONS` | `50` | Global cap on concurrent sessions. Was `OMNI_MAX_SESSIONS=5` in v0.1. |
 
-> **v0.3 additions** (being added in Wave 1): `OMNI_LISTEN_HOST` (default `127.0.0.1`), `OMNI_MAX_PARALLEL_SESSIONS` (default `50`), `OMNI_BODY_SIZE_LIMIT` (default `10485760`), `OMNI_TLS_CERT`, `OMNI_TLS_KEY`, `OMNI_CORS_ALLOWED_ORIGINS`, `OMNI_REQUEST_TIMEOUT_MS`, `OMNI_WATCHDOG_MS`.
+> **v0.3 additions** (added in Wave 1): `OMNI_LISTEN_HOST`, `OMNI_MAX_PARALLEL_SESSIONS`. Coming in Wave 1: `OMNI_BODY_SIZE_LIMIT`, `OMNI_TLS_CERT`, `OMNI_TLS_KEY`, `OMNI_CORS_ALLOWED_ORIGINS`, `OMNI_REQUEST_TIMEOUT_MS`, `OMNI_WATCHDOG_MS`.
 
 ---
 

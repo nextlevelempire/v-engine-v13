@@ -18,7 +18,8 @@
     "smoke:local": "tsx scripts/local-smoke.ts",
     "smoke:security": "tsx tests/security-smoke.ts",
     "smoke:env": "tsx tests/env-smoke.ts",
-    "smoke:listen-host": "tsx tests/listen-host-smoke.ts"
+    "smoke:listen-host": "tsx tests/listen-host-smoke.ts",
+    "smoke:parallel-cap": "tsx tests/parallel-cap-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",
