@@ -93,6 +93,45 @@ export function verifyRuntimeGrant(
   return claims;
 }
 
+/**
+ * Mints a runtime grant token for testing. Uses the same dev secret that
+ * `verifyRuntimeGrant` accepts in non-production. NEVER use this in production
+ * — `secret()` will throw if NODE_ENV=production and no secret is set, so this
+ * function fails closed.
+ *
+ * @param input - grant claims
+ * @returns signed JWT-style token (header.payload.signature, all base64url)
+ */
+export function mintRuntimeGrant(input: {
+  daemonInstanceId: string;
+  orgId?: string;
+  sub?: string;
+  scopes?: string[];
+  sessionId?: string;
+  policyVersion?: string;
+  creditBudget?: number;
+  ttlSeconds?: number;
+  iss?: string;
+}): string {
+  const now = Math.floor(Date.now() / 1000);
+  const claims: OmniRuntimeGrantClaims = {
+    creditBudget: input.creditBudget,
+    daemonInstanceId: input.daemonInstanceId,
+    exp: now + (input.ttlSeconds ?? 300),
+    iat: now,
+    iss: input.iss ?? "omni-runtime-test",
+    orgId: input.orgId ?? "test-org",
+    policyVersion: input.policyVersion ?? "v0",
+    scopes: input.scopes ?? [],
+    sessionId: input.sessionId,
+    sub: input.sub ?? "test-user",
+  };
+  const header = base64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const payload = base64url(JSON.stringify(claims));
+  const signature = sign(`${header}.${payload}`);
+  return `${header}.${payload}.${signature}`;
+}
+
 export function describeRuntimeGrantForDiagnostics(token: string): {
   hasToken: boolean;
   segments: number;
