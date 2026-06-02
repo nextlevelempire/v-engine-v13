@@ -9,13 +9,16 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && vite build",
+    "build": "pnpm run build:server && pnpm run build:client",
+    "build:server": "tsc -p tsconfig.json",
+    "build:client": "node -e \"const fs=require('fs');if(!fs.existsSync('client/index.html')){console.log('[build:client] no client/index.html — skipping');process.exit(0);}require('child_process').execSync('vite build',{stdio:'inherit'})\"",
     "dev": "tsx src/cli.ts serve",
     "start": "node dist/src/cli.js serve",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "smoke:local": "tsx scripts/local-smoke.ts",
     "smoke:security": "tsx tests/security-smoke.ts",
-    "smoke:env": "tsx tests/env-smoke.ts"
+    "smoke:env": "tsx tests/env-smoke.ts",
+    "smoke:listen-host": "tsx tests/listen-host-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",

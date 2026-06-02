@@ -6,10 +6,15 @@ function resolvePort(): number {
   return Number(process.env.PORT ?? process.env.OMNI_PORT ?? 4011);
 }
 
+function resolveListenHost(): string {
+  return process.env.OMNI_LISTEN_HOST?.trim() || "127.0.0.1";
+}
+
 async function runServe(): Promise<void> {
   const port = resolvePort();
+  const host = resolveListenHost();
   const server = await startStandaloneServer(port);
-  console.log(`[omni-browser-v4] listening on http://0.0.0.0:${port}`);
+  console.log(`[omni-browser-v4] listening on http://${host}:${port}`);
 
   // Auto-pair: when running in cloud mode (OMNI_PAIRING_TOKEN, OMNI_CONTROL_PLANE_URL,
   // and OMNI_AGENT_PUBLIC_URL are set), redeem the pairing token against the control

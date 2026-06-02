@@ -23,7 +23,7 @@ const ALLOWED_ORIGINS = new Set([
   ...readAllowedOriginsFromEnv(),
 ]);
 const DEFAULT_PORT = numberFromEnv("PORT", numberFromEnv("OMNI_PORT", 4011));
-const LISTEN_HOST = "0.0.0.0";
+const LISTEN_HOST = process.env.OMNI_LISTEN_HOST?.trim() || "127.0.0.1";
 const RUNTIME_VERSION = "4.0.0";
 
 export async function startStandaloneServer(port: number = DEFAULT_PORT) {
@@ -214,7 +214,7 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
         );
       }
 
-      if (!DISABLE_CLIENT_ASSETS) {
+      if (!DISABLE_CLIENT_ASSETS && !url.pathname.startsWith("/api/")) {
         return serveClientAsset(url.pathname, response);
       }
 

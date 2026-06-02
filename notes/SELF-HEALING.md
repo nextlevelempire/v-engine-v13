@@ -29,3 +29,11 @@
 - **Fix:** Add a test-grant minter helper to the smoke script. Sign a minimal valid grant with the dev secret, send it as `Authorization: Bearer <token>`. This unblocks all future smoke tests in v0.3.
 - **Test:** `pnpm run smoke:local` should now pass. Will verify on the next run.
 - **Status:** fixed
+
+### [2026-06-02 14:05] Baseline setup — `pnpm run build` broken: vite expects index.html
+- **Symptom:** `pnpm run build` fails: `error during build: Could not resolve entry module "index.html"`. The `tsc` step succeeds; the `vite build` step fails.
+- **Root cause:** v0.1 has `vite.config.ts` pointing at `index.html` as the entry, but the source doesn't include one. The v0.1 source is server-only; the UI was a separate concern. The v0.1 `build` script is `tsc -p tsconfig.json && vite build`, which always runs vite, so the build is broken in v0.1.
+- **Impact:** `pnpm run build` is broken in v0.1. Any CI that runs `build` would fail.
+- **Fix:** Split build into `build:server` (just tsc) and `build:client` (vite, only if client/index.html exists). `build` runs both. This way the server-only build works in v0.3, and the client build is opt-in.
+- **Test:** `pnpm run build` should now pass.
+- **Status:** fixed
