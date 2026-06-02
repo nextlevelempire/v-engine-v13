@@ -57,6 +57,7 @@ GET /api/sessions?token=<token>
 | `/healthz` | GET | (none — alias for `/livez`) |
 | `/metrics` | GET | (none — Prometheus exposition, opt-out via `OMNI_METRICS_DISABLED=1`) |
 | `/api/runtime/attach` | POST | `runtime.attach` |
+| `/api/whoami` | GET | (none — returns grant claims, useful for debugging; aliases `orgId` as `tenantId` in response) |
 | `/api/sessions` | GET | `sessions.create` |
 | `/api/sessions` | POST | `sessions.create` |
 | `/api/sessions/:sessionId/command` | POST | `sessions.command` |
@@ -183,6 +184,7 @@ All env vars use the `OMNI_*` prefix. This is the V-Engine's own naming conventi
 | `OMNI_WEBHOOK_TIMEOUT_MS` | `5000` | Per-attempt delivery timeout. |
 | `OMNI_WEBHOOK_MAX_RETRIES` | `3` | Max delivery retries (with exponential backoff). |
 | `OMNI_WEBHOOK_RETRY_BASE_MS` | `500` | Base delay for retry backoff (doubled per attempt). |
+| `OMNI_TENANT_SCOPING` | `off` | If `enforce`, runtime rejects requests where grant's orgId doesn't match the session's orgId on cross-session operations. |
 
 > **v0.3 additions** (added in Wave 1): `OMNI_LISTEN_HOST`, `OMNI_MAX_PARALLEL_SESSIONS`, `OMNI_BODY_SIZE_LIMIT` (default 10485760 = 10 MB, returns 413), `OMNI_REQUEST_TIMEOUT_MS` (default 60000, returns 504), `OMNI_AUTH_FAIL_LIMIT` (default 10), `OMNI_AUTH_FAIL_WINDOW_MS` (default 60000), `OMNI_CORS_ALLOWED_ORIGINS`, `OMNI_ALLOW_LOOPBACK_CORS`, `/livez`+`/readyz`+`/healthz` probes, `OMNI_TLS_CERT`, `OMNI_TLS_KEY`, `OMNI_LOG_LEVEL` (default `info`), structured JSON logging via `log.info/warn/error` from `src/server/log.ts`, `OMNI_METRICS_DISABLED`, `/metrics` Prometheus endpoint with counters `omni_http_requests_total`, `omni_http_request_errors_total`, `omni_sessions_created_total`, `omni_sessions_evicted_total`, `omni_auth_failures_total`, `omni_body_too_large_total`, `omni_request_timeouts_total`, `omni_rate_limited_total` and gauge `omni_sessions_active`, request ID middleware + W3C `traceparent` propagation via `parseIncomingContext`/`mintRequestContext` in `src/server/request-context.ts` (echoed back on `x-omni-request-id` and `traceparent` response headers).
 

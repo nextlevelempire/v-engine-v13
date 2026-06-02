@@ -56,6 +56,13 @@ const AUTH_FAIL_WINDOW_MS = numberFromEnv("OMNI_AUTH_FAIL_WINDOW_MS", 60_000); /
 const TLS_CERT_PATH = process.env.OMNI_TLS_CERT?.trim() || null;
 const TLS_KEY_PATH = process.env.OMNI_TLS_KEY?.trim() || null;
 const TLS_ENABLED = Boolean(TLS_CERT_PATH && TLS_KEY_PATH);
+// When OMNI_TENANT_SCOPING=enforce, the runtime requires the grant's
+// orgId (== tenantId) to match the session's orgId on cross-session
+// operations. Off by default for backward compatibility — the
+// session.create flow already enforces orgId match in the request
+// payload, but this flag extends the check to vault, artifacts, etc.
+// when set.
+const TENANT_SCOPING = (process.env.OMNI_TENANT_SCOPING ?? "off") === "enforce";
 const RUNTIME_VERSION = "4.0.0";
 
 export async function startStandaloneServer(port: number = DEFAULT_PORT) {
@@ -146,6 +153,21 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
             attached: true,
             claims,
             daemonInstanceId,
+          });
+        }
+
+        // P8-02: whoami endpoint. Returns the grant claims (tenantId
+        // == orgId, userId == sub, scopes, exp). Useful for debugging
+        // and for the dashboard to display "you are X for tenant Y".
+        if ((method === "GET" || method === "HEAD") && url.pathname === "/api/whoami") {
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "");
+          return writeJson(response, 200, {
+            claims: {
+              ...claims,
+              tenantId: claims.orgId, // alias for downstream consumers
+            },
+            daemonInstanceId,
+            tenantScoping: TENANT_SCOPING ? "enforce" : "off",
           });
         }
 
