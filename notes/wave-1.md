@@ -81,6 +81,31 @@
 - Accepts both http:// and https:// (v0.1 was https-only).
 - Test: `smoke:cors-allowlist` (unit).
 
+### [Task 10] P8-01 — K8s probes
+- Added `/livez`, `/readyz`, `/healthz` endpoints. No auth (infrastructure).
+- `/readyz` honors `OMNI_SHUTTING_DOWN=1` (returns 503).
+- Test: `smoke:healthz` (unit).
+
+### [Task 11] P2-03 — TLS
+- `OMNI_TLS_CERT` + `OMNI_TLS_KEY` paths to PEM files. When both set, server binds HTTPS via node:https.
+- Refactored handler into named function so it can be passed to either http or https createServer.
+- Certs read at boot. Rotation requires restart (standard container pattern).
+- Test: `smoke:tls` (unit, 9 assertions).
+
+### [Task 12] P4-01 — Structured logging
+- New `src/server/log.ts`: `log.info/warn/error/debug` emit one JSON object per line.
+- info/debug → stdout, warn/error → stderr (12-factor).
+- Level filter via `OMNI_LOG_LEVEL` (default `info`).
+- Replaced 4 console.log/warn/error call sites in local-server.ts.
+- Test: `smoke:structured-logging` (6 assertions: stdout/stderr routing, level filter, JSON shape).
+
+### [Task 13] P4-02 — Prometheus /metrics
+- New `src/server/metrics.ts`: hand-rolled counters + gauges, zero deps (200 KB less than prom-client).
+- 9 metrics defined: http_requests_total, http_request_errors_total, sessions_active (gauge), sessions_created_total, sessions_evicted_total, auth_failures_total, body_too_large_total, request_timeouts_total, rate_limited_total.
+- GET `/metrics` returns Prometheus exposition format. Opt-out via `OMNI_METRICS_DISABLED=1`.
+- `response.on('finish')` hook records per-request metrics. Route normalization collapses dynamic paths to `/api/sessions/{id}/command` style.
+- Test: `smoke:metrics` (12 assertions: all metric families, label accumulation, reset, exposition format).
+
 ## Blockers
 
 - (filled in as we go)
