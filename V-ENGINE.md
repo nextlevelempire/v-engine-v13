@@ -55,6 +55,7 @@ GET /api/sessions?token=<token>
 | `/livez` | GET | (none — K8s liveness probe) |
 | `/readyz` | GET | (none — K8s readiness probe, 503 if `OMNI_SHUTTING_DOWN=1`) |
 | `/healthz` | GET | (none — alias for `/livez`) |
+| `/metrics` | GET | (none — Prometheus exposition, opt-out via `OMNI_METRICS_DISABLED=1`) |
 | `/api/runtime/attach` | POST | `runtime.attach` |
 | `/api/sessions` | GET | `sessions.create` |
 | `/api/sessions` | POST | `sessions.create` |
@@ -173,8 +174,9 @@ All env vars use the `OMNI_*` prefix. This is the V-Engine's own naming conventi
 | `OMNI_TLS_CERT` | _(unset)_ | Path to PEM certificate file. With `OMNI_TLS_KEY`, binds HTTPS. |
 | `OMNI_TLS_KEY` | _(unset)_ | Path to PEM private key file. With `OMNI_TLS_CERT`, binds HTTPS. |
 | `OMNI_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. Logs below this level are suppressed. |
+| `OMNI_METRICS_DISABLED` | `0` | If `1`, GET `/metrics` returns 404. |
 
-> **v0.3 additions** (added in Wave 1): `OMNI_LISTEN_HOST`, `OMNI_MAX_PARALLEL_SESSIONS`, `OMNI_BODY_SIZE_LIMIT` (default 10485760 = 10 MB, returns 413), `OMNI_REQUEST_TIMEOUT_MS` (default 60000, returns 504), `OMNI_AUTH_FAIL_LIMIT` (default 10), `OMNI_AUTH_FAIL_WINDOW_MS` (default 60000), `OMNI_CORS_ALLOWED_ORIGINS`, `OMNI_ALLOW_LOOPBACK_CORS`, `/livez`+`/readyz`+`/healthz` probes, `OMNI_TLS_CERT`, `OMNI_TLS_KEY`, `OMNI_LOG_LEVEL` (default `info`), structured JSON logging via `log.info/warn/error` from `src/server/log.ts`.
+> **v0.3 additions** (added in Wave 1): `OMNI_LISTEN_HOST`, `OMNI_MAX_PARALLEL_SESSIONS`, `OMNI_BODY_SIZE_LIMIT` (default 10485760 = 10 MB, returns 413), `OMNI_REQUEST_TIMEOUT_MS` (default 60000, returns 504), `OMNI_AUTH_FAIL_LIMIT` (default 10), `OMNI_AUTH_FAIL_WINDOW_MS` (default 60000), `OMNI_CORS_ALLOWED_ORIGINS`, `OMNI_ALLOW_LOOPBACK_CORS`, `/livez`+`/readyz`+`/healthz` probes, `OMNI_TLS_CERT`, `OMNI_TLS_KEY`, `OMNI_LOG_LEVEL` (default `info`), structured JSON logging via `log.info/warn/error` from `src/server/log.ts`, `OMNI_METRICS_DISABLED`, `/metrics` Prometheus endpoint with counters `omni_http_requests_total`, `omni_http_request_errors_total`, `omni_sessions_created_total`, `omni_sessions_evicted_total`, `omni_auth_failures_total`, `omni_body_too_large_total`, `omni_request_timeouts_total`, `omni_rate_limited_total` and gauge `omni_sessions_active`.
 
 ---
 

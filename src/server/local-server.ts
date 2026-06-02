@@ -15,6 +15,7 @@ import {
   OmniPayloadTooLargeError,
 } from "./omni-errors.js";
 import { log } from "./log.js";
+import { metrics, renderPrometheus } from "./metrics.js";
 
 // When OMNI_DISABLE_CLIENT_ASSETS=1, the fallthrough returns 404 instead of
 // serving static client assets. Used in cloud mode where there is no client.
@@ -68,6 +69,20 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
       return;
     }
 
+    // Per-request metrics hook (P4-02). Records the final status code
+    // and route label on response finish. Cheap; runs once per request.
+    response.on("finish", () => {
+      const status = String(response.statusCode || 0);
+      const method = request.method || "GET";
+      const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
+      // Normalize the path to its route template (strip dynamic ids).
+      const path = normalizeRoute(url.pathname);
+      metrics.httpRequestsTotal.inc({ method, path, status });
+      if (response.statusCode >= 400) {
+        metrics.httpRequestErrorsTotal.inc({ method, path, status });
+      }
+    });
+
     const handlerDone = (async () => {
       try {
         const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
@@ -100,6 +115,20 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
         if ((method === "GET" || method === "HEAD") && url.pathname === "/healthz") {
           // Alias for /livez + /api/health union — kept for ops familiarity.
           return writeJson(response, 200, { ok: true, status: "live" });
+        }
+
+        // Prometheus exposition (P4-02). No auth required — this is an
+        // infrastructure scrape endpoint, like the healthz probes.
+        // Disable with OMNI_METRICS_DISABLED=1 if you don't want to
+        // expose internal counters.
+        if ((method === "GET" || method === "HEAD") && url.pathname === "/metrics") {
+          if ((process.env.OMNI_METRICS_DISABLED ?? "") === "1") {
+            return writeJson(response, 404, { ok: false, error: "metrics disabled" });
+          }
+          const body = renderPrometheus();
+          response.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });
+          response.end(body);
+          return;
         }
 
         if (method === "POST" && url.pathname === "/api/runtime/attach") {
@@ -499,6 +528,23 @@ function applyCorsHeaders(request: IncomingMessage, response: ServerResponse): v
     "Content-Type,Authorization,Accept,x-omni-runtime-token,x-omni-ingest-secret",
   );
   response.setHeader("vary", "Origin");
+}
+
+// Collapse dynamic path segments into route templates so metrics
+// don't explode with one label per session id.
+function normalizeRoute(pathname: string): string {
+  if (pathname.startsWith("/api/sessions/")) {
+    const rest = pathname.slice("/api/sessions/".length);
+    if (rest.includes("/")) {
+      const [id, ...suffixParts] = rest.split("/");
+      return `/api/sessions/{id}/${suffixParts.join("/")}`;
+    }
+    return "/api/sessions/{id}";
+  }
+  if (pathname.startsWith("/api/vault/")) {
+    return "/api/vault/{name}";
+  }
+  return pathname || "/";
 }
 
 function readAllowedOriginsFromEnv(env: NodeJS.ProcessEnv = process.env): string[] {
