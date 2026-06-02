@@ -24,6 +24,7 @@ const ALLOWED_ORIGINS = new Set([
 ]);
 const DEFAULT_PORT = numberFromEnv("PORT", numberFromEnv("OMNI_PORT", 4011));
 const LISTEN_HOST = process.env.OMNI_LISTEN_HOST?.trim() || "127.0.0.1";
+const BODY_SIZE_LIMIT = numberFromEnv("OMNI_BODY_SIZE_LIMIT", 10 * 1024 * 1024); // 10 MB
 const RUNTIME_VERSION = "4.0.0";
 
 export async function startStandaloneServer(port: number = DEFAULT_PORT) {
@@ -221,15 +222,19 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
       return writeJson(response, 404, { error: "Not found", ok: false });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const statusCode = /grant|unauthorized|scope|token/i.test(message)
-        ? 401
-        : /budget/i.test(message)
-          ? 402
-          : /not\s*found|unknown\s+omni\s+session|does\s+not\s+exist/i.test(message)
-            ? 404
-            : /rate\s*limit|too\s*many|throttl/i.test(message)
-              ? 429
-              : 500;
+      const explicitStatus = (error as { httpStatus?: number })?.httpStatus;
+      const statusCode = explicitStatus
+        ?? (/grant|unauthorized|scope|token/i.test(message)
+          ? 401
+          : /budget/i.test(message)
+            ? 402
+            : /not\s*found|unknown\s+omni\s+session|does\s+not\s+exist/i.test(message)
+              ? 404
+              : /rate\s*limit|too\s*many|throttl/i.test(message)
+                ? 429
+                : /body\s*size|payload\s*too\s*large|exceeds.*limit/i.test(message)
+                  ? 413
+                  : 500);
       return writeJson(response, statusCode, {
         error: message,
         ok: false,
@@ -390,8 +395,18 @@ function contentTypeFor(target: string): string {
 
 async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
+  let total = 0;
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buf.length;
+    if (total > BODY_SIZE_LIMIT) {
+      const err = new Error(
+        `Request body exceeds OMNI_BODY_SIZE_LIMIT=${BODY_SIZE_LIMIT} bytes`,
+      ) as Error & { httpStatus?: number };
+      err.httpStatus = 413;
+      throw err;
+    }
+    chunks.push(buf);
   }
   if (chunks.length === 0) {
     return {};
