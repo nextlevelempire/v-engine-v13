@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { getDaemonInstanceId, getRuntimeCapabilities } from "./daemon-instance.js";
 import { getOmniStandaloneService, type SessionCommand, type SessionEvent } from "./service.js";
 import {
@@ -44,13 +45,21 @@ const BODY_SIZE_LIMIT = numberFromEnv("OMNI_BODY_SIZE_LIMIT", 10 * 1024 * 1024);
 const REQUEST_TIMEOUT_MS = numberFromEnv("OMNI_REQUEST_TIMEOUT_MS", 60_000); // 60 s per request
 const AUTH_FAIL_LIMIT = numberFromEnv("OMNI_AUTH_FAIL_LIMIT", 10); // 10 failures
 const AUTH_FAIL_WINDOW_MS = numberFromEnv("OMNI_AUTH_FAIL_WINDOW_MS", 60_000); // 60 s window
+// TLS: when both OMNI_TLS_CERT and OMNI_TLS_KEY are set, the server
+// binds with HTTPS instead of HTTP. Paths to PEM files. The cert
+// chain is read at boot; rotation requires a restart. K8s-friendly:
+// mount the certs as a Secret volume and set the env vars to the
+// in-pod paths.
+const TLS_CERT_PATH = process.env.OMNI_TLS_CERT?.trim() || null;
+const TLS_KEY_PATH = process.env.OMNI_TLS_KEY?.trim() || null;
+const TLS_ENABLED = Boolean(TLS_CERT_PATH && TLS_KEY_PATH);
 const RUNTIME_VERSION = "4.0.0";
 
 export async function startStandaloneServer(port: number = DEFAULT_PORT) {
   const service = getOmniStandaloneService();
   const daemonInstanceId = getDaemonInstanceId();
 
-  const server = createServer(async (request, response) => {
+  const requestHandler = async (request: IncomingMessage, response: ServerResponse) => {
     applyCorsHeaders(request, response);
     if ((request.method || "GET") === "OPTIONS") {
       response.writeHead(204);
@@ -312,11 +321,22 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
         // response already torn down
       }
     }
-  });
+  };
+
+  let server;
+  if (TLS_ENABLED) {
+    const cert = fs.readFileSync(TLS_CERT_PATH!);
+    const key = fs.readFileSync(TLS_KEY_PATH!);
+    server = createHttpsServer({ cert, key }, requestHandler);
+    console.log(`[start] TLS enabled (cert=${TLS_CERT_PATH})`);
+  } else {
+    server = createHttpServer(requestHandler);
+  }
 
   await new Promise<void>((resolve) => {
     server.listen(port, LISTEN_HOST, resolve);
   });
+  console.log(`[start] listening on ${TLS_ENABLED ? "https" : "http"}://${LISTEN_HOST}:${port}`);
 
   return server;
 }

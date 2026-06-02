@@ -170,8 +170,10 @@ All env vars use the `OMNI_*` prefix. This is the V-Engine's own naming conventi
 | `OMNI_AUTH_FAIL_WINDOW_MS` | `60000` (60 s) | Sliding window for the auth-fail counter. |
 | `OMNI_CORS_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated list of origins allowed to call the API. v0.3 defaults to empty (operator must set). Legacy alias: `OMNI_RUNTIME_ALLOWED_ORIGINS`. |
 | `OMNI_ALLOW_LOOPBACK_CORS` | `0` | If `1`, allow `http://127.0.0.1` and `http://localhost` in CORS. Off by default. |
+| `OMNI_TLS_CERT` | _(unset)_ | Path to PEM certificate file. With `OMNI_TLS_KEY`, binds HTTPS. |
+| `OMNI_TLS_KEY` | _(unset)_ | Path to PEM private key file. With `OMNI_TLS_CERT`, binds HTTPS. |
 
-> **v0.3 additions** (added in Wave 1): `OMNI_LISTEN_HOST`, `OMNI_MAX_PARALLEL_SESSIONS`, `OMNI_BODY_SIZE_LIMIT` (default 10485760 = 10 MB, returns 413), `OMNI_REQUEST_TIMEOUT_MS` (default 60000, returns 504), `OMNI_AUTH_FAIL_LIMIT` (default 10), `OMNI_AUTH_FAIL_WINDOW_MS` (default 60000), `OMNI_CORS_ALLOWED_ORIGINS`, `OMNI_ALLOW_LOOPBACK_CORS`, `/livez`+`/readyz`+`/healthz` probes. Coming in Wave 1: `OMNI_TLS_CERT`, `OMNI_TLS_KEY`.
+> **v0.3 additions** (added in Wave 1): `OMNI_LISTEN_HOST`, `OMNI_MAX_PARALLEL_SESSIONS`, `OMNI_BODY_SIZE_LIMIT` (default 10485760 = 10 MB, returns 413), `OMNI_REQUEST_TIMEOUT_MS` (default 60000, returns 504), `OMNI_AUTH_FAIL_LIMIT` (default 10), `OMNI_AUTH_FAIL_WINDOW_MS` (default 60000), `OMNI_CORS_ALLOWED_ORIGINS`, `OMNI_ALLOW_LOOPBACK_CORS`, `/livez`+`/readyz`+`/healthz` probes, `OMNI_TLS_CERT`, `OMNI_TLS_KEY`.
 
 ---
 

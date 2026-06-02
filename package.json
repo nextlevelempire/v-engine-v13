@@ -25,7 +25,8 @@
     "smoke:auth-rate-limit": "tsx tests/auth-rate-limit-smoke.ts",
     "smoke:typed-errors": "tsx tests/typed-errors-smoke.ts",
     "smoke:cors-allowlist": "tsx tests/cors-allowlist-smoke.ts",
-    "smoke:healthz": "tsx tests/healthz-smoke.ts"
+    "smoke:healthz": "tsx tests/healthz-smoke.ts",
+    "smoke:tls": "tsx tests/tls-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",
