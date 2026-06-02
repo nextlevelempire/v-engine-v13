@@ -19,10 +19,21 @@ import {
 const DISABLE_CLIENT_ASSETS = (process.env.OMNI_DISABLE_CLIENT_ASSETS ?? "") === "1";
 
 const CLIENT_DIST_DIR = path.resolve("dist/client");
-const DEFAULT_ALLOWED_ORIGINS = [
-  "https://omnibrowser.online",
-  "https://www.omnibrowser.online",
-];
+// CORS origins: defaults are empty in v0.3 because V-Engine is a
+// standalone runtime — operators must set OMNI_CORS_ALLOWED_ORIGINS
+// to the list of frontends that should be allowed to call this API.
+// For local development, the loopback is automatically allowed when
+// OMNI_ALLOW_LOOPBACK_CORS=1 (off by default to prevent accidental
+// exposure).
+const LOOPBACK_CORS_ENABLED = (process.env.OMNI_ALLOW_LOOPBACK_CORS ?? "") === "1";
+const DEFAULT_ALLOWED_ORIGINS: string[] = LOOPBACK_CORS_ENABLED
+  ? [
+      "http://127.0.0.1",
+      "http://127.0.0.1:4011",
+      "http://localhost",
+      "http://localhost:4011",
+    ]
+  : [];
 const ALLOWED_ORIGINS = new Set([
   ...DEFAULT_ALLOWED_ORIGINS,
   ...readAllowedOriginsFromEnv(),
@@ -442,10 +453,14 @@ function applyCorsHeaders(request: IncomingMessage, response: ServerResponse): v
 }
 
 function readAllowedOriginsFromEnv(env: NodeJS.ProcessEnv = process.env): string[] {
-  return (env.OMNI_RUNTIME_ALLOWED_ORIGINS ?? "")
+  // OMNI_CORS_ALLOWED_ORIGINS is the v0.3 name. OMNI_RUNTIME_ALLOWED_ORIGINS
+  // is kept as a legacy alias so existing v0.1 deployments don't break.
+  const raw = env.OMNI_CORS_ALLOWED_ORIGINS ?? env.OMNI_RUNTIME_ALLOWED_ORIGINS ?? "";
+  return raw
     .split(",")
     .map((origin) => origin.trim())
-    .filter((origin) => origin.startsWith("https://") && !origin.includes("*"));
+    .filter((origin) => origin.startsWith("http://") || origin.startsWith("https://"))
+    .filter((origin) => !origin.includes("*"));
 }
 
 async function serveClientAsset(pathname: string, response: ServerResponse): Promise<void> {
