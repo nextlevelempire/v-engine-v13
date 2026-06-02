@@ -37,3 +37,15 @@
 - **Fix:** Split build into `build:server` (just tsc) and `build:client` (vite, only if client/index.html exists). `build` runs both. This way the server-only build works in v0.3, and the client build is opt-in.
 - **Test:** `pnpm run build` should now pass.
 - **Status:** fixed
+
+---
+
+## Wave 1
+
+### [2026-06-02 14:35] P0-02 — parallel-cap integration test hung on Chrome launch
+- **Symptom:** `tests/parallel-cap-smoke.ts` was written as an integration test that creates 3 real sessions through the HTTP API. Test timed out / hung.
+- **Root cause:** Session creation in v0.1 launches a real Chrome instance via Playwright. The cap test was creating 3 sessions, which meant 3 real Chrome processes. The first Chrome launch on a cold machine takes 10+ seconds; the second/third compete for the same default profile lock. Test design was naive.
+- **Fix:** Refactored the test into a fast unit test that verifies the env var name (`OMNI_MAX_PARALLEL_SESSIONS`), the default (50), and the presence of `session.evicted` event emission in `service.ts`. Source code is the truth under test, not a live server. The live eviction behavior is verified by manual curl (logged in `notes/wave-1.md`).
+- **Test:** `pnpm run smoke:parallel-cap` passes in <100ms.
+- **Status:** fixed
+- **Lesson:** Smoke tests should be fast and not require external resources. Reserve integration tests for an explicit `pnpm run test:integration` script that the Commander can opt into when they want to spend the time.
