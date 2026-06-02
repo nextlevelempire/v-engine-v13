@@ -1,9 +1,9 @@
 # Wave 1 — Foundation, Reliability & Observability
 
 **Date:** 2026-06-02
-**Status:** IN PROGRESS
+**Status:** COMPLETE — all 24 findings delivered
 **Branch:** `wave/1-foundation`
-**Findings covered:** 24 (see Tracker Sheet Wave column)
+**Findings covered:** 24 / 24
 
 ## Scope (from V13-IMPLEMENTATION-PLAN.md §7)
 
@@ -112,4 +112,62 @@
 
 ## Outcomes
 
-- (filled in at end of wave)
+- 24/24 findings delivered
+- 21 smoke tests, all green
+- 16 commits on `wave/1-foundation` branch
+- Typecheck + build:server pass
+- Validation gate met: typecheck, build, smoke:local, smoke:security, smoke:env, /livez + /metrics + /healthz endpoints, action-log/screenshots/whoami/features endpoints
+- Self-heal log: 5 entries (baselining bugs + 1 test refactor). All resolved.
+
+## Final task list
+
+| # | Task | Findings | Commit |
+|---|---|---|---|
+| 1 | V-ENGINE.md API reference | P0-01 | `d873e46` |
+| 2 | Parallel cap unified, session.evicted SSE | P0-02, P0-06, P2-09 | `1c510cf` |
+| 3 | OMNI_LISTEN_HOST | P2-01 | `6105952` |
+| 4 | 404 JSON for unknown /api paths | P2-06 | `6105952` |
+| 5 | OMNI_BODY_SIZE_LIMIT (10 MB, 413) | P2-02 | `d102532` |
+| 6 | OMNI_REQUEST_TIMEOUT_MS (60 s, 504) | P2-12, P2-13, P2-14 | `a900caa` |
+| 7 | Auth-fail rate limiter (10/60s, 429) | P2-04 | `3856e4f` |
+| 8 | Typed OmniError class hierarchy | P2-05 | `6e8807d` |
+| 9 | OMNI_CORS_ALLOWED_ORIGINS + loopback | P2-08 | `1682637` |
+| 10 | /livez + /readyz + /healthz probes | P8-01 | `ffd3058` |
+| 11 | OMNI_TLS_CERT + OMNI_TLS_KEY (HTTPS) | P2-03 | `b488b82` |
+| 12 | Structured JSON logger (log.info/warn/error) | P4-01 | `bcc37a0` |
+| 13 | Prometheus /metrics (9 metrics) | P4-02 | `0bd30d2` |
+| 14 | Request ID + W3C traceparent | P4-03 | `c4b9b58` |
+| 15 | Paginated actionLog endpoint | P4-04 | `bf0d30c` |
+| 16 | Screenshots timeline endpoint | P4-05 | `c4dee2a` |
+| 17 | Webhook delivery (HMAC, retries, timeout) | P4-06 | `7671646` |
+| 18 | /api/whoami + OMNI_TENANT_SCOPING | P8-02 | `759c0d7` |
+| 19 | Dockerfile + fly.toml + env example | P8-03 | `bd5a08a` |
+| 20 | Feature flags (OMNI_FEATURE_*) | P8-07 | `7920206` |
+
+## New modules
+
+- `src/server/omni-errors.ts` — typed error class hierarchy (10 classes)
+- `src/server/log.ts` — structured JSON logger
+- `src/server/metrics.ts` — hand-rolled Prometheus counters/gauges
+- `src/server/request-context.ts` — W3C traceparent + request id
+- `src/server/webhooks.ts` — HMAC-signed webhook delivery
+- `src/server/feature-flags.ts` — env-based feature flag system
+
+## New endpoints
+
+- `/livez`, `/readyz`, `/healthz` (K8s probes)
+- `/metrics` (Prometheus exposition)
+- `/api/whoami` (grant claims introspection)
+- `/api/features` (feature flag listing)
+- `/api/sessions/{id}/action-log` (paginated: `?limit=N&before=ISO_TS`)
+- `/api/sessions/{id}/screenshots` (screenshot-only timeline)
+
+## New env vars (15 total)
+
+`OMNI_LISTEN_HOST`, `OMNI_MAX_PARALLEL_SESSIONS`, `OMNI_BODY_SIZE_LIMIT`, `OMNI_REQUEST_TIMEOUT_MS`, `OMNI_AUTH_FAIL_LIMIT`, `OMNI_AUTH_FAIL_WINDOW_MS`, `OMNI_CORS_ALLOWED_ORIGINS`, `OMNI_ALLOW_LOOPBACK_CORS`, `OMNI_TLS_CERT`, `OMNI_TLS_KEY`, `OMNI_LOG_LEVEL`, `OMNI_METRICS_DISABLED`, `OMNI_ACTION_LOG_MAX`, `OMNI_WEBHOOK_URL`, `OMNI_WEBHOOK_SECRET`, `OMNI_WEBHOOK_TIMEOUT_MS`, `OMNI_WEBHOOK_MAX_RETRIES`, `OMNI_WEBHOOK_RETRY_BASE_MS`, `OMNI_TENANT_SCOPING`, `OMNI_FEATURE_*` (pattern).
+
+## Ready for next wave
+
+- All Wave 1 findings closed on `wave/1-foundation` branch.
+- Branch is ready to merge to `main` (or stay separate for review).
+- Wave 2 (AI Capability) can begin once Commander approves Wave 1.
