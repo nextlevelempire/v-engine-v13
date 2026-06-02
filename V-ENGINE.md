@@ -163,8 +163,10 @@ All env vars use the `OMNI_*` prefix. This is the V-Engine's own naming conventi
 | `OMNI_MAX_PARALLEL_SESSIONS` | `50` | Global cap on concurrent sessions. Was `OMNI_MAX_SESSIONS=5` in v0.1. |
 | `OMNI_BODY_SIZE_LIMIT` | `10485760` (10 MB) | Max JSON request body in bytes. Exceeding returns 413. |
 | `OMNI_REQUEST_TIMEOUT_MS` | `60000` (60 s) | Hard timeout per HTTP request. Exceeding returns 504. |
+| `OMNI_AUTH_FAIL_LIMIT` | `10` | Max auth failures per (ip, token-prefix) within window before 429. |
+| `OMNI_AUTH_FAIL_WINDOW_MS` | `60000` (60 s) | Sliding window for the auth-fail counter. |
 
-> **v0.3 additions** (added in Wave 1): `OMNI_LISTEN_HOST`, `OMNI_MAX_PARALLEL_SESSIONS`, `OMNI_BODY_SIZE_LIMIT` (default 10485760 = 10 MB, returns 413), `OMNI_REQUEST_TIMEOUT_MS` (default 60000, returns 504). Coming in Wave 1: `OMNI_TLS_CERT`, `OMNI_TLS_KEY`, `OMNI_CORS_ALLOWED_ORIGINS`.
+> **v0.3 additions** (added in Wave 1): `OMNI_LISTEN_HOST`, `OMNI_MAX_PARALLEL_SESSIONS`, `OMNI_BODY_SIZE_LIMIT` (default 10485760 = 10 MB, returns 413), `OMNI_REQUEST_TIMEOUT_MS` (default 60000, returns 504), `OMNI_AUTH_FAIL_LIMIT` (default 10), `OMNI_AUTH_FAIL_WINDOW_MS` (default 60000). Coming in Wave 1: `OMNI_TLS_CERT`, `OMNI_TLS_KEY`, `OMNI_CORS_ALLOWED_ORIGINS`.
 
 ---
 

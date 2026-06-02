@@ -26,6 +26,8 @@ const DEFAULT_PORT = numberFromEnv("PORT", numberFromEnv("OMNI_PORT", 4011));
 const LISTEN_HOST = process.env.OMNI_LISTEN_HOST?.trim() || "127.0.0.1";
 const BODY_SIZE_LIMIT = numberFromEnv("OMNI_BODY_SIZE_LIMIT", 10 * 1024 * 1024); // 10 MB
 const REQUEST_TIMEOUT_MS = numberFromEnv("OMNI_REQUEST_TIMEOUT_MS", 60_000); // 60 s per request
+const AUTH_FAIL_LIMIT = numberFromEnv("OMNI_AUTH_FAIL_LIMIT", 10); // 10 failures
+const AUTH_FAIL_WINDOW_MS = numberFromEnv("OMNI_AUTH_FAIL_WINDOW_MS", 60_000); // 60 s window
 const RUNTIME_VERSION = "4.0.0";
 
 export async function startStandaloneServer(port: number = DEFAULT_PORT) {
@@ -289,6 +291,51 @@ function buildHealthPayload(port: number, daemonInstanceId: string) {
   };
 }
 
+// Sliding-window rate limiter for auth failures. Keyed by
+// `${ip}:${tokenPrefix}` so a misbehaving client hitting many
+// endpoints with the same bad token gets throttled, but a legitimate
+// client with a real token is unaffected by a different bad-token
+// caller. Memory bounded by the # of unique (ip, token) pairs seen.
+const AUTH_FAIL_BUCKETS = new Map<string, { count: number; windowStart: number }>();
+
+function recordAuthFailure(ip: string, tokenHint: string): { count: number; retryAfterMs: number } {
+  const key = `${ip}:${tokenHint}`;
+  const now = Date.now();
+  const bucket = AUTH_FAIL_BUCKETS.get(key);
+  if (!bucket || now - bucket.windowStart > AUTH_FAIL_WINDOW_MS) {
+    AUTH_FAIL_BUCKETS.set(key, { count: 1, windowStart: now });
+    return { count: 1, retryAfterMs: AUTH_FAIL_WINDOW_MS };
+  }
+  bucket.count += 1;
+  return {
+    count: bucket.count,
+    retryAfterMs: Math.max(0, AUTH_FAIL_WINDOW_MS - (now - bucket.windowStart)),
+  };
+}
+
+function checkAuthRateLimit(ip: string, tokenHint: string): { limited: boolean; retryAfterMs: number } {
+  const key = `${ip}:${tokenHint}`;
+  const bucket = AUTH_FAIL_BUCKETS.get(key);
+  if (!bucket) return { limited: false, retryAfterMs: 0 };
+  const now = Date.now();
+  if (now - bucket.windowStart > AUTH_FAIL_WINDOW_MS) {
+    AUTH_FAIL_BUCKETS.delete(key);
+    return { limited: false, retryAfterMs: 0 };
+  }
+  if (bucket.count >= AUTH_FAIL_LIMIT) {
+    return {
+      limited: true,
+      retryAfterMs: Math.max(0, AUTH_FAIL_WINDOW_MS - (now - bucket.windowStart)),
+    };
+  }
+  return { limited: false, retryAfterMs: 0 };
+}
+
+function tokenPrefixForDiagnostics(token: string | null | undefined): string {
+  if (!token || token.length < 8) return "none";
+  return token.slice(0, 8);
+}
+
 function verifyRequestGrant(
   request: IncomingMessage,
   url: URL,
@@ -297,6 +344,20 @@ function verifyRequestGrant(
   sessionId?: string,
 ) {
   const token = readRuntimeGrantToken(request, url);
+  const ip = request.socket.remoteAddress || "unknown";
+  const tokenHint = tokenPrefixForDiagnostics(token);
+
+  // Pre-check: if this (ip, token) is already over the auth-fail limit,
+  // reject before doing the (relatively expensive) signature check.
+  const limit = checkAuthRateLimit(ip, tokenHint);
+  if (limit.limited) {
+    const err = new Error(
+      `Auth rate limit exceeded: ${AUTH_FAIL_LIMIT} failures in ${AUTH_FAIL_WINDOW_MS} ms`,
+    ) as Error & { httpStatus?: number; retryAfterMs?: number };
+    err.httpStatus = 429;
+    err.retryAfterMs = limit.retryAfterMs;
+    throw err;
+  }
 
   try {
     const opts: {
@@ -310,9 +371,11 @@ function verifyRequestGrant(
     }
     return verifyRuntimeGrant(token, opts);
   } catch (error) {
+    const result = recordAuthFailure(ip, tokenHint);
     console.warn("[runtime.grant] verification failed", {
       ...describeRuntimeGrantForDiagnostics(token),
       currentDaemonInstanceId: daemonInstanceId,
+      failCount: result.count,
       message: error instanceof Error ? error.message : String(error),
       requiredScope,
       sessionId,
