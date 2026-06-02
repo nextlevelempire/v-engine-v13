@@ -65,6 +65,7 @@ GET /api/sessions?token=<token>
 | `/api/sessions/:sessionId/screenshot` | GET | `sessions.read` |
 | `/api/sessions/:sessionId/artifacts` | GET | `sessions.read` |
 | `/api/sessions/:sessionId/artifacts/:artifactId` | GET | `sessions.read` |
+| `/api/sessions/:sessionId/action-log` | GET | `sessions.command` (paginated: `?limit=N&before=ISO_TS`) |
 | `/api/vault/:service` | GET | `vault.read` |
 | `/api/vault/:service/load` | POST | `vault.read` |
 | `/api/vault/:service/save` | POST | `vault.write` |
@@ -175,6 +176,7 @@ All env vars use the `OMNI_*` prefix. This is the V-Engine's own naming conventi
 | `OMNI_TLS_KEY` | _(unset)_ | Path to PEM private key file. With `OMNI_TLS_CERT`, binds HTTPS. |
 | `OMNI_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. Logs below this level are suppressed. |
 | `OMNI_METRICS_DISABLED` | `0` | If `1`, GET `/metrics` returns 404. |
+| `OMNI_ACTION_LOG_MAX` | `10000` | Max actionLog entries kept per session. Older entries are dropped. |
 
 > **v0.3 additions** (added in Wave 1): `OMNI_LISTEN_HOST`, `OMNI_MAX_PARALLEL_SESSIONS`, `OMNI_BODY_SIZE_LIMIT` (default 10485760 = 10 MB, returns 413), `OMNI_REQUEST_TIMEOUT_MS` (default 60000, returns 504), `OMNI_AUTH_FAIL_LIMIT` (default 10), `OMNI_AUTH_FAIL_WINDOW_MS` (default 60000), `OMNI_CORS_ALLOWED_ORIGINS`, `OMNI_ALLOW_LOOPBACK_CORS`, `/livez`+`/readyz`+`/healthz` probes, `OMNI_TLS_CERT`, `OMNI_TLS_KEY`, `OMNI_LOG_LEVEL` (default `info`), structured JSON logging via `log.info/warn/error` from `src/server/log.ts`, `OMNI_METRICS_DISABLED`, `/metrics` Prometheus endpoint with counters `omni_http_requests_total`, `omni_http_request_errors_total`, `omni_sessions_created_total`, `omni_sessions_evicted_total`, `omni_auth_failures_total`, `omni_body_too_large_total`, `omni_request_timeouts_total`, `omni_rate_limited_total` and gauge `omni_sessions_active`, request ID middleware + W3C `traceparent` propagation via `parseIncomingContext`/`mintRequestContext` in `src/server/request-context.ts` (echoed back on `x-omni-request-id` and `traceparent` response headers).
 

@@ -269,6 +269,21 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
           return writeJson(response, 200, { artifacts: service.listArtifacts(sessionId, claims.sub) });
         }
 
+        // P4-04: paginated actionLog access.
+        // Query params: ?limit=N (default 50, max 500), ?before=ISO_TS (cursor).
+        const actionLogMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/action-log$/);
+        if (method === "GET" && actionLogMatch) {
+          const sessionId = decodeURIComponent(actionLogMatch[1] || "");
+          verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
+          const limitRaw = Number(url.searchParams.get("limit"));
+          const before = url.searchParams.get("before") || undefined;
+          const opts: { limit?: number; before?: string } = {};
+          if (Number.isFinite(limitRaw) && limitRaw > 0) opts.limit = limitRaw;
+          if (before) opts.before = before;
+          const entries = service.listActionLog(sessionId, opts);
+          return writeJson(response, 200, { entries, sessionId });
+        }
+
         const artifactMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/artifacts\/([^/]+)$/);
         if (method === "GET" && artifactMatch) {
           const sessionId = decodeURIComponent(artifactMatch[1] || "");

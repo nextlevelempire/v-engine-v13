@@ -290,14 +290,17 @@ export class OmniStandaloneService {
     record.remainingBudget = Math.max(record.remainingBudget - cost, 0);
 
     // Push action-log entry for the control plane's loop/no-progress detection.
-    // Newest-first; capped at 10 entries so the snapshot payload stays compact.
+    // Newest-first; bounded by OMNI_ACTION_LOG_MAX (default 10000) to prevent
+    // unbounded memory growth on long-lived sessions. Paginated access via
+    // listActionLog(sessionId, { limit, before }).
     record.actionLog.unshift({
       type: command.type,
       ts: new Date().toISOString(),
       summary: describeCommandForActionLog(command),
     });
-    if (record.actionLog.length > 10) {
-      record.actionLog.length = 10;
+    const actionLogMax = numberFromEnv("OMNI_ACTION_LOG_MAX", 10_000);
+    if (record.actionLog.length > actionLogMax) {
+      record.actionLog.length = actionLogMax;
     }
 
     this.emit(record, "command.completed", {
@@ -326,6 +329,26 @@ export class OmniStandaloneService {
       metadata: await this.describeSession(record),
       runtime: status,
     };
+  }
+
+  // P4-04: paginated actionLog access. Newest-first ordering,
+  // cursor-based pagination via 'before' (ts string of the last
+  // entry the client already has).
+  listActionLog(
+    sessionId: string,
+    opts: { limit?: number; before?: string } = {},
+  ): Array<{ type: string; ts: string; summary?: string }> {
+    const record = this.requireSession(sessionId);
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+    const before = opts.before ? Date.parse(opts.before) : null;
+    const log = record.actionLog;
+    const result: Array<{ type: string; ts: string; summary?: string }> = [];
+    for (const entry of log) {
+      if (before !== null && Date.parse(entry.ts) >= before) continue;
+      result.push(entry);
+      if (result.length >= limit) break;
+    }
+    return result;
   }
 
   listSessions(filter: { orgId?: string | null; userId?: string | null } = {}): Array<Record<string, unknown>> {
