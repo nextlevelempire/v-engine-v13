@@ -16,6 +16,7 @@ import {
 } from "./omni-errors.js";
 import { log } from "./log.js";
 import { metrics, renderPrometheus } from "./metrics.js";
+import { parseIncomingContext, type RequestContext } from "./request-context.js";
 
 // When OMNI_DISABLE_CLIENT_ASSETS=1, the fallthrough returns 404 instead of
 // serving static client assets. Used in cloud mode where there is no client.
@@ -68,6 +69,14 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
       response.end();
       return;
     }
+
+    // Per-request context (P4-03): traceparent + request id. Accept
+    // inbound x-omni-request-id / x-request-id / traceparent, mint
+    // fresh if absent. Echoed back via response header so the client
+    // can correlate.
+    const ctx = parseIncomingContext(request.headers);
+    response.setHeader("x-omni-request-id", ctx.requestId);
+    response.setHeader("traceparent", ctx.traceparent);
 
     // Per-request metrics hook (P4-02). Records the final status code
     // and route label on response finish. Cheap; runs once per request.

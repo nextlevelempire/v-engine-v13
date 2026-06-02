@@ -30,7 +30,7 @@ class CounterFamily {
     this.labelNames = opts.labelNames ?? [];
   }
 
-  inc(labels: Record<string, string> | undefined, by: number = 1): void {
+  inc(labels?: Record<string, string>, by: number = 1): void {
     const key = labelKey(labels);
     this.values.set(key, (this.values.get(key) ?? 0) + by);
   }
@@ -48,7 +48,7 @@ class GaugeFamily {
     this.labelNames = opts.labelNames ?? [];
   }
 
-  set(labels: Record<string, string> | undefined, value: number): void {
+  set(value: number, labels?: Record<string, string>): void {
     this.values.set(labelKey(labels), value);
   }
 

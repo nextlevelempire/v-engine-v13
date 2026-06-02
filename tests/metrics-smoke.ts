@@ -15,7 +15,7 @@ metrics.sessionsEvictedTotal.inc({ reason: "parallel_cap" });
 metrics.bodyTooLargeTotal.inc();
 metrics.requestTimeoutsTotal.inc();
 metrics.rateLimitedTotal.inc({ scope: "auth" });
-metrics.sessionsActive.set(undefined, 3);
+metrics.sessionsActive.set(3);
 
 const out = renderPrometheus();
 
