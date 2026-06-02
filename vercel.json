@@ -1,0 +1,23 @@
+{
+  "buildCommand": "pnpm run build",
+  "framework": null,
+  "outputDirectory": "dist/client",
+  "functions": {
+    "api/sessions/[id]/command.ts": {
+      "maxDuration": 300
+    },
+    "api/sessions/[id]/events.ts": {
+      "maxDuration": 300
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

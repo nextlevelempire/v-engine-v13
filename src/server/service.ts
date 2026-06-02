@@ -1,0 +1,997 @@
+import fs from "node:fs";
+import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { OmniCoreClone } from "../runtime/omni-core-clone.js";
+import { ProofCapture } from "../runtime/proof-capture.js";
+import { OmniSessionPersistence } from "../runtime/session-persistence.js";
+import { OmniSessionManager } from "../runtime/omni-session-manager.js";
+import { OmniRateLimiter } from "../runtime/rate-limiter.js";
+import { listVaultEntries, loadVaultEntry, saveVaultEntry, type OmniVaultEntry } from "../utils/local-vault.js";
+import {
+  getBrowserRecordSessionDir,
+  getBrowserRecordsRoot,
+  getBrowserSessionDir,
+  getMissionLogsDir,
+  getSessionStateRootDir,
+} from "../utils/omni-paths.js";
+import { prepareDirectiveForModel, validateAssistantReply } from "./model-guard.js";
+import {
+  syncArtifactRecord,
+  syncGuardrailIncident,
+  syncRuntimeEvent,
+  syncRuntimeSessionSnapshot,
+  syncVaultRecord,
+} from "./control-plane-sync.js";
+import { sanitizeProtectedRuntimeValue } from "../security/trade-secret-guard.js";
+import { LocalComputerController, type ComputerAction } from "../runtime/local-computer.js";
+import { getEnabledTakeoverCapabilities } from "./takeover-config.js";
+
+export type SessionEvent = {
+  data: Record<string, unknown>;
+  eventId: string;
+  sessionId: string;
+  timestamp: string;
+  type: string;
+};
+
+type SessionListener = (event: SessionEvent) => void;
+
+type CreateSessionInput = {
+  agentId?: string;
+  creditBudget?: number | null;
+  objective?: string | null;
+  operatorSessionId?: number | null;
+  orgId?: string | null;
+  persistent?: boolean;
+  policyVersion?: string | null;
+  sessionId?: string;
+  userId?: string | null;
+};
+
+type CommandContext = {
+  agentId?: string;
+  ip?: string | null;
+  orgId?: string | null;
+  userAgent?: string | null;
+  userId?: string | null;
+};
+
+type ControlPlaneSessionStatus =
+  | "awaiting_auth"
+  | "closed"
+  | "completed"
+  | "failed"
+  | "launching"
+  | "paused"
+  | "running";
+
+export type SessionCommand =
+  | { type: "assistant_reply"; message: string }
+  | { type: "click"; selector: string }
+  | { type: "computer"; action: ComputerAction; confirm?: boolean }
+  | { type: "directive"; message: string }
+  | { type: "navigate"; url: string }
+  | { type: "pause"; reason?: string }
+  | { type: "resume"; reason?: string }
+  | { type: "screenshot"; label?: string }
+  | { type: "status" }
+  | { type: "type"; selector: string; text: string };
+
+type SessionRecord = {
+  actionLog: Array<{
+    type: string;
+    ts: string;
+    // Optional summary text for the control plane to inspect.  Not sent as
+    // telemetry detail — only logged in-band for heuristic loop detection.
+    summary?: string;
+  }>;
+  agentId: string;
+  commandCount: number;
+  computer: LocalComputerController | null;
+  core: OmniCoreClone;
+  createdAt: string;
+  creditBudget: number;
+  lastActiveAt: string;
+  listeners: Set<SessionListener>;
+  objective: string | null;
+  orgId: string | null;
+  persistent: boolean;
+  policyVersion: string | null;
+  remainingBudget: number;
+  sessionId: string;
+  sessionManager: OmniSessionManager;
+  totalArtifactCount: number;
+  userId: string | null;
+};
+
+const CONTROL_PLANE_TELEMETRY_EVENTS = new Set([
+  "checkpoint.created",
+  "execution",
+  "handoff.requested",
+  "human_message",
+  "mission_log",
+  "observation.captured",
+  "plan.created",
+  "replay.bundle_created",
+  "verification.result",
+]);
+
+export class OmniStandaloneService {
+  private cleanupTimer: NodeJS.Timeout;
+  private readonly rateLimiter = new OmniRateLimiter({
+    agentRpm: numberFromEnv("OMNI_AGENT_RPM", 30),
+    burstPerSecond: numberFromEnv("OMNI_BURST_RPS", 10),
+    sessionRpm: numberFromEnv("OMNI_SESSION_RPM", 60),
+  });
+  private readonly sessions = new Map<string, SessionRecord>();
+
+  constructor() {
+    this.cleanupTimer = setInterval(() => {
+      void this.cleanupIdleSessions();
+    }, Math.min(this.idleTimeoutMs(), 60_000));
+    this.cleanupTimer.unref?.();
+  }
+
+  async createSession(input: CreateSessionInput = {}): Promise<Record<string, unknown>> {
+    await this.enforceSessionCap();
+
+    const sessionId = input.sessionId?.trim() || randomUUID();
+    if (this.sessions.has(sessionId)) {
+      throw new Error(`Omni session already exists: ${sessionId}`);
+    }
+
+    const agentId = input.agentId?.trim() || input.userId?.trim() || "standalone-api";
+    const now = new Date().toISOString();
+    const proofCapture = new ProofCapture(
+      getBrowserRecordsRoot(input.userId ?? undefined),
+      getMissionLogsDir(input.userId ?? undefined),
+    );
+    const sessionPersistence = new OmniSessionPersistence(getSessionStateRootDir(input.userId ?? undefined));
+    const sessionManager = new OmniSessionManager();
+    const core = new OmniCoreClone({
+      proofCapture,
+      sessionManager,
+      sessionPersistence,
+    });
+
+    core.setUserScope(input.userId ?? null);
+    await core.initVault(getBrowserSessionDir(sessionId, input.userId ?? undefined), input.userId ?? undefined);
+    core.startRuntimePersistence({
+      agentId,
+      checkpointIntervalMs: numberFromEnv("OMNI_CHECKPOINT_MS", 300_000),
+      heartbeatIntervalMs: numberFromEnv("OMNI_HEARTBEAT_MS", 60_000),
+    });
+
+    if (input.objective?.trim()) {
+      await core.bootstrapTaskMission({
+        objective: input.objective.trim(),
+        operatorSessionId: input.operatorSessionId ?? null,
+        persistent: input.persistent === true,
+        provider: "standalone-runtime",
+      });
+    }
+
+    const creditBudget = Math.max(0, Number(input.creditBudget ?? 0));
+    const record: SessionRecord = {
+      actionLog: [],
+      agentId,
+      commandCount: 0,
+      computer: null,
+      core,
+      createdAt: now,
+      creditBudget,
+      lastActiveAt: now,
+      listeners: new Set(),
+      objective: input.objective?.trim() || null,
+      orgId: input.orgId?.trim() || null,
+      persistent: input.persistent === true,
+      policyVersion: input.policyVersion?.trim() || null,
+      remainingBudget: creditBudget,
+      sessionId,
+      sessionManager,
+      totalArtifactCount: 0,
+      userId: input.userId?.trim() || null,
+    };
+    core.setTelemetrySink((event, payload) => {
+      if (!CONTROL_PLANE_TELEMETRY_EVENTS.has(event)) {
+        return;
+      }
+      this.emit(record, event, sanitizeProtectedRuntimeValue({
+        ...payload,
+        tool: "browser",
+      }));
+    });
+    this.sessions.set(sessionId, record);
+
+    const snapshot = await this.describeSession(record);
+    this.emit(record, "session.created", snapshot);
+    void this.syncSessionSnapshot(record);
+    return snapshot;
+  }
+
+  async executeCommand(
+    sessionId: string,
+    command: SessionCommand,
+    context: CommandContext = {},
+  ): Promise<Record<string, unknown>> {
+    const record = this.requireSession(sessionId);
+    const agentId = context.agentId?.trim() || record.agentId;
+    this.touch(record);
+
+    const agentRate = this.rateLimiter.consumeAgent(agentId);
+    if (!agentRate.allowed) {
+      throw new Error(`Agent rate limit exceeded for ${agentId}`);
+    }
+
+    const sessionRate = this.rateLimiter.consumeSession(sessionId);
+    if (!sessionRate.allowed) {
+      throw new Error(`Session rate limit exceeded for ${sessionId}`);
+    }
+
+    const cost = command.type === "status" ? 0 : 1;
+    if (cost > 0 && record.remainingBudget < cost) {
+      await record.core.pauseMission("Credit budget exhausted").catch(() => undefined);
+      void this.syncSessionSnapshot(record, "paused");
+      throw new Error(`Session budget exhausted for ${sessionId}`);
+    }
+
+    this.emit(record, "command.started", {
+      agentId,
+      command,
+      rateLimits: {
+        agentRemaining: agentRate.remaining,
+        sessionRemaining: sessionRate.remaining,
+      },
+      remainingBudget: record.remainingBudget,
+    });
+
+    let result: Record<string, unknown>;
+    switch (command.type) {
+      case "navigate":
+        result = await record.core.navigate(command.url);
+        break;
+      case "click":
+        result = await record.core.click(command.selector);
+        break;
+      case "type":
+        result = await record.core.type(command.selector, command.text);
+        break;
+      case "screenshot":
+        result = await record.core.screenshot(command.label);
+        break;
+      case "pause":
+        result = { ...(await record.core.pauseMission(command.reason)) };
+        break;
+      case "resume":
+        result = { ...(await record.core.resumeMission(command.reason)) };
+        break;
+      case "status":
+        result = await record.core.getStatus();
+        break;
+      case "computer":
+        result = await this.handleComputer(record, command);
+        break;
+      case "directive":
+        result = await this.handleDirective(record, command.message, context);
+        break;
+      case "assistant_reply":
+        result = await this.handleAssistantReply(record, command.message, context);
+        break;
+      default:
+        result = assertNever(command);
+    }
+
+    record.commandCount += 1;
+    record.remainingBudget = Math.max(record.remainingBudget - cost, 0);
+
+    // Push action-log entry for the control plane's loop/no-progress detection.
+    // Newest-first; capped at 10 entries so the snapshot payload stays compact.
+    record.actionLog.unshift({
+      type: command.type,
+      ts: new Date().toISOString(),
+      summary: describeCommandForActionLog(command),
+    });
+    if (record.actionLog.length > 10) {
+      record.actionLog.length = 10;
+    }
+
+    this.emit(record, "command.completed", {
+      agentId,
+      commandType: command.type,
+      remainingBudget: record.remainingBudget,
+      result,
+    });
+    void this.syncSessionSnapshot(record);
+    if (
+      command.type === "screenshot" ||
+      command.type === "navigate" ||
+      command.type === "click" ||
+      command.type === "type" ||
+      command.type === "directive"
+    ) {
+      void this.syncArtifacts(record);
+    }
+    return result;
+  }
+
+  async getSessionStatus(sessionId: string): Promise<Record<string, unknown>> {
+    const record = this.requireSession(sessionId);
+    const status = await record.core.getStatus();
+    return {
+      metadata: await this.describeSession(record),
+      runtime: status,
+    };
+  }
+
+  listSessions(filter: { orgId?: string | null; userId?: string | null } = {}): Array<Record<string, unknown>> {
+    return Array.from(this.sessions.values())
+      .filter((record) => {
+        if (filter.orgId && record.orgId !== filter.orgId) return false;
+        if (filter.userId && record.userId !== filter.userId) return false;
+        return true;
+      })
+      .map((record) => ({
+        agentId: record.agentId,
+        commandCount: record.commandCount,
+        createdAt: record.createdAt,
+        creditBudget: record.creditBudget,
+        lastActiveAt: record.lastActiveAt,
+        objective: record.objective,
+        orgId: record.orgId,
+        persistent: record.persistent,
+        policyVersion: record.policyVersion,
+        remainingBudget: record.remainingBudget,
+        sessionId: record.sessionId,
+        userId: record.userId,
+      }));
+  }
+
+  listVaultEntries(userId?: string | null): OmniVaultEntry[] {
+    return listVaultEntries(userId);
+  }
+
+  getVaultEntry(service: string, userId?: string | null): OmniVaultEntry | null {
+    return loadVaultEntry(service, userId);
+  }
+
+  saveVaultPayload(
+    service: string,
+    userId: string | null | undefined,
+    input: Partial<OmniVaultEntry> & { envelope?: Record<string, unknown> },
+    orgId?: string | null,
+  ): OmniVaultEntry {
+    const entry: OmniVaultEntry = {
+      capturedAt: input.capturedAt || new Date().toISOString(),
+      cookies: input.cookies ?? [],
+      domains: input.domains ?? [],
+      envelope: input.envelope,
+      lastUrl: input.lastUrl || "",
+      service,
+      title: input.title || service,
+      userAgent: input.userAgent || "omni-dashboard-control-plane",
+    };
+    saveVaultEntry(entry, userId);
+    if (userId && orgId) {
+      void syncVaultRecord({
+        domains: entry.domains,
+        envelope: entry.envelope,
+        lastUrl: entry.lastUrl,
+        orgId,
+        service,
+        title: entry.title,
+        userId,
+      });
+    }
+    return entry;
+  }
+
+  loadVaultPayload(service: string, userId?: string | null): OmniVaultEntry | null {
+    return loadVaultEntry(service, userId);
+  }
+
+  listArtifacts(sessionId: string, userId?: string | null): Array<Record<string, unknown>> {
+    const liveRecord = this.sessions.get(sessionId);
+    const rootDir = liveRecord
+      ? liveRecord.core.getProofCapture().getSessionPaths(sessionId).rootDir
+      : getBrowserRecordSessionDir(sessionId, userId ?? undefined);
+    return collectArtifacts(rootDir).map((artifactPath) => ({
+      artifactId: path.relative(rootDir, artifactPath.path).replaceAll(path.sep, "/"),
+      createdAt: new Date(artifactPath.mtimeMs).toISOString(),
+      label: path.basename(artifactPath.path),
+      path: artifactPath.path,
+      sessionId,
+      sizeBytes: artifactPath.size,
+      type: inferArtifactType({
+        contentType: inferArtifactContentType({
+          label: path.basename(artifactPath.path),
+          path: artifactPath.path,
+        }),
+        label: path.basename(artifactPath.path),
+        path: artifactPath.path,
+      }),
+    }));
+  }
+
+  getArtifact(sessionId: string, artifactId: string, userId?: string | null): Record<string, unknown> | null {
+    return this.listArtifacts(sessionId, userId).find((artifact) => artifact.artifactId === artifactId) ?? null;
+  }
+
+  subscribe(sessionId: string, listener: SessionListener): () => void {
+    const record = this.requireSession(sessionId);
+    record.listeners.add(listener);
+    void this.describeSession(record).then((snapshot) => {
+      listener({
+        data: snapshot,
+        eventId: randomUUID(),
+        sessionId,
+        timestamp: new Date().toISOString(),
+        type: "session.snapshot",
+      });
+    });
+    return () => {
+      record.listeners.delete(listener);
+    };
+  }
+
+  async closeSession(sessionId: string): Promise<void> {
+    const record = this.sessions.get(sessionId);
+    if (!record) {
+      return;
+    }
+    const runtimeStatus = await record.core.getStatus().catch(() => ({}));
+    this.emit(record, "session.closing", {});
+    // Await snapshots during shutdown so the control plane receives the final
+    // session-closed status before the container parks.
+    await this.syncSessionSnapshot(record, "closed", runtimeStatus).catch(() => undefined);
+    await this.syncArtifacts(record).catch(() => undefined);
+    this.sessions.delete(sessionId);
+    await record.core.close();
+    record.sessionManager.dispose();
+  }
+
+  async shutdown(): Promise<void> {
+    clearInterval(this.cleanupTimer);
+    for (const sessionId of Array.from(this.sessions.keys())) {
+      await this.closeSession(sessionId);
+    }
+  }
+
+  private async handleDirective(
+    record: SessionRecord,
+    message: string,
+    context: CommandContext,
+  ): Promise<Record<string, unknown>> {
+    const guarded = await prepareDirectiveForModel({
+      ip: context.ip,
+      message,
+      sessionId: record.sessionId,
+      userAgent: context.userAgent,
+      userId: context.userId ?? record.userId,
+    });
+
+    if (guarded.allowed === false) {
+      const refusal = guarded;
+      this.emit(record, "security.refusal", {
+        disengaged: refusal.disengaged,
+        firedWebhook: refusal.firedWebhook,
+        strikeCount: refusal.strikeCount,
+      });
+      if (record.orgId) {
+        void syncGuardrailIncident({
+          kind: "security.refusal",
+          orgId: record.orgId,
+          payload: {
+            disengaged: refusal.disengaged,
+            firedWebhook: refusal.firedWebhook,
+            strikeCount: refusal.strikeCount,
+          },
+          sessionId: record.sessionId,
+          severity: refusal.disengaged ? "critical" : "warning",
+          userId: record.userId,
+        });
+      }
+      return {
+        disengaged: refusal.disengaged,
+        firedWebhook: refusal.firedWebhook,
+        response: refusal.response,
+        strikeCount: refusal.strikeCount,
+      };
+    }
+
+    await record.core.receiveHumanMessage(guarded.message, {
+      echoInScratchpad: true,
+      queueForAgent: true,
+    });
+
+    return {
+      accepted: true,
+      modelTurn: guarded.modelTurn,
+      queuedDirective: guarded.message,
+    };
+  }
+
+  private async handleComputer(
+    record: SessionRecord,
+    command: { type: "computer"; action: ComputerAction; confirm?: boolean },
+  ): Promise<Record<string, unknown>> {
+    // Capability gate: only a machine advertising takeover:local_computer drives the desktop.
+    if (!getEnabledTakeoverCapabilities().includes("takeover:local_computer")) {
+      throw new Error(
+        "local_computer takeover is not enabled on this machine (advertise takeover:local_computer to use it).",
+      );
+    }
+
+    if (!record.computer) {
+      record.computer = new LocalComputerController();
+    }
+    // The human approved the pending irreversible/financial action for this step.
+    if (command.confirm === true) {
+      record.computer.grantConfirmation();
+    }
+
+    const outcome = await record.computer.execute(command.action);
+
+    // Emit a cockpit event; never echo screenshot bytes into the event stream payload.
+    const { screenshotBase64, ...eventOutcome } = outcome;
+    this.emit(record, "computer.action", {
+      action: command.action.type,
+      hasScreenshot: typeof screenshotBase64 === "string",
+      outcome: eventOutcome,
+    });
+    if (outcome.handoff && record.orgId) {
+      void syncGuardrailIncident({
+        kind: `computer.${outcome.handoff.kind}`,
+        orgId: record.orgId,
+        payload: { label: outcome.handoff.label },
+        sessionId: record.sessionId,
+        severity: "warning",
+        userId: record.userId,
+      });
+    }
+
+    return { ...outcome };
+  }
+
+  private async handleAssistantReply(
+    record: SessionRecord,
+    message: string,
+    context: CommandContext,
+  ): Promise<Record<string, unknown>> {
+    const guarded = await validateAssistantReply({
+      ip: context.ip,
+      message,
+      sessionId: record.sessionId,
+      userAgent: context.userAgent,
+      userId: context.userId ?? record.userId,
+    });
+
+    if (!guarded.disengaged && guarded.response.trim()) {
+      await record.core.appendScratchpadEntry(guarded.response, "ai");
+    }
+
+    if (guarded.refusalDetected) {
+      this.emit(record, "security.refusal", {
+        disengaged: guarded.disengaged,
+        firedWebhook: guarded.firedWebhook,
+        strikeCount: guarded.strikeCount,
+      });
+      if (record.orgId) {
+        void syncGuardrailIncident({
+          kind: "assistant.refusal",
+          orgId: record.orgId,
+          payload: {
+            disengaged: guarded.disengaged,
+            firedWebhook: guarded.firedWebhook,
+            strikeCount: guarded.strikeCount,
+          },
+          sessionId: record.sessionId,
+          severity: guarded.disengaged ? "critical" : "warning",
+          userId: record.userId,
+        });
+      }
+    }
+
+    return guarded;
+  }
+
+  private emit(record: SessionRecord, type: string, data: Record<string, unknown>): void {
+    const event: SessionEvent = {
+      data,
+      eventId: randomUUID(),
+      sessionId: record.sessionId,
+      timestamp: new Date().toISOString(),
+      type,
+    };
+    for (const listener of record.listeners) {
+      listener(event);
+    }
+    void syncRuntimeEvent({
+      data,
+      eventType: type,
+      orgId: record.orgId,
+      sessionId: record.sessionId,
+      timestamp: event.timestamp,
+      userId: record.userId,
+    });
+  }
+
+  private touch(record: SessionRecord): void {
+    record.lastActiveAt = new Date().toISOString();
+  }
+
+  private requireSession(sessionId: string): SessionRecord {
+    const record = this.sessions.get(sessionId);
+    if (!record) {
+      throw new Error(`Unknown Omni session: ${sessionId}`);
+    }
+    return record;
+  }
+
+  private async describeSession(record: SessionRecord): Promise<Record<string, unknown>> {
+    return {
+      actionLog: record.actionLog,
+      agentId: record.agentId,
+      commandCount: record.commandCount,
+      createdAt: record.createdAt,
+      creditBudget: record.creditBudget,
+      lastActiveAt: record.lastActiveAt,
+      objective: record.objective,
+      orgId: record.orgId,
+      persistent: record.persistent,
+      policyVersion: record.policyVersion,
+      remainingBudget: record.remainingBudget,
+      sessionId: record.sessionId,
+      status: await record.core.getStatus(),
+      totalArtifactCount: record.totalArtifactCount,
+      userId: record.userId,
+    };
+  }
+
+  private async syncSessionSnapshot(
+    record: SessionRecord,
+    forcedStatus?: ControlPlaneSessionStatus,
+    runtimeStatus?: Record<string, unknown>,
+  ): Promise<void> {
+    const resolvedStatus = (runtimeStatus ?? (await record.core.getStatus().catch(() => ({})))) as Record<string, unknown>;
+    await syncRuntimeSessionSnapshot({
+      actionLog: record.actionLog,
+      authWall: extractAuthWall(resolvedStatus),
+      currentUrl: typeof resolvedStatus["currentUrl"] === "string" ? (resolvedStatus["currentUrl"] as string) : null,
+      orgId: record.orgId,
+      runtimeSessionId:
+        typeof resolvedStatus["sessionId"] === "string" ? (resolvedStatus["sessionId"] as string) : record.sessionId,
+      sessionId: record.sessionId,
+      status: forcedStatus ?? deriveControlPlaneStatus(resolvedStatus),
+      totalArtifactCount: record.totalArtifactCount,
+      userId: record.userId,
+    });
+  }
+
+  private async syncArtifacts(record: SessionRecord): Promise<void> {
+    if (!record.orgId || !record.userId) {
+      return;
+    }
+    const artifacts = this.listArtifacts(record.sessionId, record.userId);
+    await Promise.all(
+      artifacts.map((artifact) =>
+        syncArtifactRecord({
+          artifactId: String(artifact.artifactId),
+          checksumSha256: readArtifactChecksum(artifact),
+          contentBase64: readArtifactContentBase64(artifact),
+          contentType: inferArtifactContentType(artifact),
+          downloadUrl: null,
+          fileName: String(artifact.label ?? artifact.artifactId),
+          label: String(artifact.label ?? artifact.artifactId),
+          metadata: {
+            source: "runtime",
+            syncedAt: new Date().toISOString(),
+            tool: "browser",
+          },
+          orgId: record.orgId!,
+          path: String(artifact.artifactId),
+          sessionId: record.sessionId,
+          sizeBytes: typeof artifact.sizeBytes === "number" ? artifact.sizeBytes : null,
+          type: String(artifact.type ?? "file"),
+          userId: record.userId!,
+        }),
+      ),
+    );
+  }
+
+  private async cleanupIdleSessions(): Promise<void> {
+    const cutoff = Date.now() - this.idleTimeoutMs();
+    for (const record of Array.from(this.sessions.values())) {
+      if (Date.parse(record.lastActiveAt) < cutoff) {
+        await this.closeSession(record.sessionId);
+      }
+    }
+  }
+
+  private async enforceSessionCap(): Promise<void> {
+    const cap = numberFromEnv("OMNI_MAX_SESSIONS", 5);
+    if (this.sessions.size < cap) {
+      return;
+    }
+    const oldest = Array.from(this.sessions.values()).sort(
+      (left, right) => Date.parse(left.lastActiveAt) - Date.parse(right.lastActiveAt),
+    )[0];
+    if (oldest) {
+      await this.closeSession(oldest.sessionId);
+    }
+  }
+
+  private idleTimeoutMs(): number {
+    return numberFromEnv("OMNI_IDLE_TIMEOUT_MS", 900_000);
+  }
+}
+
+function extractAuthWall(status: Record<string, unknown>): boolean {
+  const authWall = status.authWall;
+  if (typeof authWall === "boolean") {
+    return authWall;
+  }
+  if (authWall && typeof authWall === "object") {
+    const detected = (authWall as { detected?: unknown }).detected;
+    return detected === true;
+  }
+  return false;
+}
+
+function readArtifactPath(artifact: Record<string, unknown>): string | null {
+  return typeof artifact.path === "string" && artifact.path.trim() ? artifact.path : null;
+}
+
+function readArtifactContentBase64(artifact: Record<string, unknown>): string | null {
+  const targetPath = readArtifactPath(artifact);
+  if (!targetPath || !fs.existsSync(targetPath)) {
+    return null;
+  }
+  return fs.readFileSync(targetPath).toString("base64");
+}
+
+function readArtifactChecksum(artifact: Record<string, unknown>): string | null {
+  const targetPath = readArtifactPath(artifact);
+  if (!targetPath || !fs.existsSync(targetPath)) {
+    return null;
+  }
+  return createHash("sha256").update(fs.readFileSync(targetPath)).digest("hex");
+}
+
+function inferArtifactContentType(artifact: Record<string, unknown>): string {
+  const targetPath = readArtifactPath(artifact) ?? String(artifact.label ?? "");
+  switch (path.extname(targetPath).toLowerCase()) {
+    case ".csv":
+      return "text/csv; charset=utf-8";
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
+    case ".log":
+    case ".md":
+    case ".txt":
+      return "text/plain; charset=utf-8";
+    case ".png":
+      return "image/png";
+    case ".svg":
+      return "image/svg+xml";
+    case ".webm":
+      return "video/webm";
+    case ".webp":
+      return "image/webp";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function deriveControlPlaneStatus(status: Record<string, unknown>): ControlPlaneSessionStatus {
+  if (extractAuthWall(status)) {
+    return "awaiting_auth";
+  }
+  if (extractRuntimeFailed(status)) {
+    return "failed";
+  }
+  if (extractRuntimeCompleted(status)) {
+    return "completed";
+  }
+  if (status.paused === true) {
+    return "paused";
+  }
+  return "running";
+}
+
+function getRuntimeTaskBoard(status: Record<string, unknown>): Record<string, unknown> | null {
+  const taskBoard = status.taskBoard;
+  return taskBoard && typeof taskBoard === "object" ? (taskBoard as Record<string, unknown>) : null;
+}
+
+function readRuntimeStatusText(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : "";
+}
+
+function extractRuntimeStatusText(status: Record<string, unknown>): string {
+  const candidates = [
+    status.status,
+    status.state,
+    status.missionStatus,
+    status.runtimeStatus,
+    status.lifecycle,
+  ];
+
+  for (const candidate of candidates) {
+    const text = readRuntimeStatusText(candidate);
+    if (text) return text;
+  }
+
+  return "";
+}
+
+function extractNestedTaskBoardStatus(status: Record<string, unknown>): string {
+  const taskBoard = status.taskBoard;
+  if (!taskBoard || typeof taskBoard !== "object" || Array.isArray(taskBoard)) {
+    return "";
+  }
+
+  const board = taskBoard as Record<string, unknown>;
+  const candidates = [
+    board.status,
+    board.state,
+    board.missionStatus,
+    board.runtimeStatus,
+    board.lifecycle,
+  ];
+
+  for (const candidate of candidates) {
+    const text = readRuntimeStatusText(candidate);
+    if (text) return text;
+  }
+
+  return "";
+}
+
+function getRuntimeChecklistItems(status: Record<string, unknown>): Array<Record<string, unknown>> {
+  const taskBoard = getRuntimeTaskBoard(status);
+  if (!taskBoard) {
+    return [];
+  }
+  const checklist = taskBoard.checklist;
+  if (!Array.isArray(checklist)) {
+    return [];
+  }
+  return checklist.filter((item): item is Record<string, unknown> => !!item && typeof item === "object");
+}
+
+function extractRuntimeCompleted(status: Record<string, unknown>): boolean {
+  if (
+    status.completed === true ||
+    status.done === true ||
+    status.finished === true ||
+    status.closed === true
+  ) {
+    return true;
+  }
+
+  const statusText = extractRuntimeStatusText(status) || extractNestedTaskBoardStatus(status);
+  return ["completed", "complete", "done", "finished", "closed"].includes(statusText);
+}
+
+function extractRuntimeFailed(status: Record<string, unknown>): boolean {
+  if (status.failed === true || status.errored === true) {
+    return true;
+  }
+
+  const statusText = extractRuntimeStatusText(status) || extractNestedTaskBoardStatus(status);
+  return ["failed", "error", "errored"].includes(statusText);
+}
+
+function collectArtifacts(rootDir: string): Array<{ mtimeMs: number; path: string; size: number }> {
+  if (!fs.existsSync(rootDir)) {
+    return [];
+  }
+  const stack = [rootDir];
+  const collected: Array<{ mtimeMs: number; path: string; size: number }> = [];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const target = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(target);
+        continue;
+      }
+      const stat = fs.statSync(target);
+      collected.push({
+        mtimeMs: stat.mtimeMs,
+        path: target,
+        size: stat.size,
+      });
+    }
+  }
+  return collected.sort((left, right) => right.mtimeMs - left.mtimeMs);
+}
+
+function inferArtifactType(input: { path?: string | null; contentType?: string | null; label?: string | null }): string {
+  const value = `${input.path ?? ""} ${input.label ?? ""} ${input.contentType ?? ""}`.toLowerCase();
+
+  if (value.includes("screenshot")) return "screenshot";
+
+  if (/\.(html|htm)\b/.test(value) || value.includes("text/html")) {
+    return "report";
+  }
+
+  if (/\.(png|jpg|jpeg|webp|gif|svg)\b/.test(value) || value.includes("image/")) {
+    return "image";
+  }
+
+  if (/\.(json)\b/.test(value) || value.includes("application/json")) {
+    return "json";
+  }
+
+  if (/\.(log)\b/.test(value)) {
+    return "log";
+  }
+
+  if (/\.(md|markdown|txt|docx|pdf|csv)\b/.test(value) || value.includes("text/")) {
+    return "doc";
+  }
+
+  if (/\.(webm|mp4|mov)\b/.test(value) || value.includes("video/")) {
+    return "video";
+  }
+
+  return "file";
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled session command: ${JSON.stringify(value)}`);
+}
+
+function numberFromEnv(name: string, fallback: number): number {
+  const raw = Number(process.env[name] ?? fallback);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+/**
+ * Produce a compact one-line summary of a command for the action log.
+ * The control plane uses these summaries to detect loop/no-progress patterns:
+ * repeated near-identical steps with no new URLs or artifacts over N minutes.
+ *
+ * This runs in-memory only (no I/O) and produces a stable key that the control
+ * plane can hash/compare for similarity detection.
+ */
+function describeCommandForActionLog(command: SessionCommand): string {
+  switch (command.type) {
+    case "navigate":
+      return `navigate ${command.url.slice(0, 120)}`;
+    case "click":
+      return `click ${command.selector.slice(0, 60)}`;
+    case "type":
+      return `type ${command.selector.slice(0, 60)}`;
+    case "screenshot":
+      return `screenshot${command.label ? ` (${command.label.slice(0, 40)})` : ""}`;
+    case "directive":
+      return `directive ${command.message.slice(0, 100)}`;
+    case "assistant_reply":
+      return "assistant_reply";
+    case "pause":
+      return `pause${command.reason ? ` (${command.reason.slice(0, 60)})` : ""}`;
+    case "resume":
+      return `resume${command.reason ? ` (${command.reason.slice(0, 60)})` : ""}`;
+    case "status":
+      return "status";
+    case "computer":
+      return `computer ${command.action}${command.confirm ? " (confirm)" : ""}`;
+    default:
+      return assertNever(command);
+  }
+}
+
+declare global {
+  var __omniStandaloneService: OmniStandaloneService | undefined;
+}
+
+export function getOmniStandaloneService(): OmniStandaloneService {
+  if (!globalThis.__omniStandaloneService) {
+    globalThis.__omniStandaloneService = new OmniStandaloneService();
+  }
+  return globalThis.__omniStandaloneService;
+}
