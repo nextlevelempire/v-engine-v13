@@ -31,7 +31,7 @@ This wave has 24 findings spread across 4 sub-areas. Order chosen so each task h
 
 | # | Task | Findings | Sub-area | Status |
 |---|---|---|---|---|
-| 1 | Extend `ComputerAction` type + `local-computer.ts` with new low-level actions (right_click, double_click, shortcut, drag, scroll, hover, clipboard, file_upload, file_download, screenshot_element, fill_form, scroll_until, enter_frame, exit_frame, shadow DOM) | P1-01, P1-02, P1-03, P1-04, P1-05, P1-07, P1-08, P1-11 | Low-level actions | IN PROGRESS |
+| 1 | Extend `ComputerAction` type + `local-computer.ts` with new low-level actions (right_click, double_click, shortcut, drag, scroll, hover, clipboard, file_upload, file_download, screenshot_element, fill_form, scroll_until, enter_frame, exit_frame, shadow DOM) | P1-01, P1-02, P1-03, P1-04, P1-05, P1-07, P1-08, P1-11 | Low-level actions | DONE (2026-06-02) |
 | 2 | Wrap new low-level actions as high-level commands in `service.ts` | P1-01..P1-08 | High-level commands | pending |
 | 3 | Extend `ClickInput` to accept `text`, `coordinates`, `match_index` overloads | P1-01, P7-05 | Input shapes | pending |
 | 4 | Session browser context: viewport, user_agent, locale, timezone, geolocation, permissions, color_scheme, device emulation | P1-09..P1-13 | Session context | pending |
@@ -135,3 +135,26 @@ Any CAPTCHA-detection false positives, stealth-detection regressions, command-sh
 ## Sheet update (planned)
 
 Mark all Wave 2 findings as `Done` on the Tracker Sheet at the end of the wave.
+
+## Task 1 (2026-06-02) — DONE
+
+**Findings covered:** P1-01..P1-05, P1-07, P1-08, P1-11 (8 findings)
+
+**Files changed:**
+- `src/runtime/native-input.ts` — extended `NativeInputAdapter` with optional `drag`, `scroll`, `clipboardRead`, `clipboardWrite`; implemented in the nut.js loader with provider fallback
+- `src/runtime/local-computer.ts` — added 15 new `ComputerAction` variants, dispatch in `execute()`, page-DOM routing in `executePageDom()`, `setPage()` / `getPage()` on `LocalComputerController`
+- `tests/low-level-actions-smoke.ts` — unit smoke (new)
+- `package.json` — added `smoke:low-level-actions` script
+
+**Decisions for this task:**
+- 8 desktop-level variants route through `NativeInputAdapter`; 7 page-DOM variants route through a new `executePageDom()` private method
+- When a page-DOM action runs without an attached page, it returns a structured `ok: false, blockedReason` outcome (fail-closed, not a throw) so the action log + handoff path keeps working
+- `exit_frame` is a controller-state reset, NOT a page-DOM action — it does not require a page
+- Adapter methods added in `native-input.ts` are all optional (`?`) on the interface so existing tests that don't implement them still typecheck
+- `LocalComputerController` constructor now accepts `{ adapter?, page? }` for dependency injection in smokes
+- No code deletion; existing 8 ComputerAction variants unchanged (zero-deletion rule)
+
+**Validation gate:**
+- `pnpm run typecheck` — TODO this turn
+- `pnpm run build:server` — TODO this turn
+- `pnpm run smoke:low-level-actions` — TODO this turn

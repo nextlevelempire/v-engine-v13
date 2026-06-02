@@ -19,6 +19,14 @@ export type NativeInputAdapter = {
   typeText(text: string): Promise<void>;
   pressKeys(keys: string[]): Promise<void>;
   screenSize(): Promise<{ height: number; width: number }>;
+  /** Wave 2: drag from (x1, y1) to (x2, y2). */
+  drag?(x1: number, y1: number, x2: number, y2: number): Promise<void>;
+  /** Wave 2: scroll the wheel at the current cursor position. */
+  scroll?(deltaX: number, deltaY: number): Promise<void>;
+  /** Wave 2: read the OS clipboard text. */
+  clipboardRead?(): Promise<string>;
+  /** Wave 2: write text to the OS clipboard. */
+  clipboardWrite?(text: string): Promise<void>;
 };
 
 // nut.js package name held in a variable so TypeScript treats the dynamic import as
@@ -92,6 +100,50 @@ async function loadNutAdapter(): Promise<NativeInputAdapter | null> {
       },
       async typeText(text) {
         await keyboard.type(text);
+      },
+      // Wave 2: drag, scroll, clipboard. Optional methods on the interface;
+      // the smoke tests inject stubs so a missing nut.js module is fine.
+      async drag(x1, y1, x2, y2) {
+        if (typeof mouse.drag === "function") {
+          await mouse.drag(straightTo(new Point(x1, y1)), straightTo(new Point(x2, y2)));
+          return;
+        }
+        // Fallback: step the mouse manually if drag helper is unavailable.
+        await mouse.move(straightTo(new Point(x1, y1)));
+        await mouse.pressButton(buttonOf("left"));
+        await mouse.move(straightTo(new Point(x2, y2)));
+        await mouse.releaseButton(buttonOf("left"));
+      },
+      async scroll(deltaX, deltaY) {
+        if (typeof mouse.scroll === "function") {
+          await mouse.scroll(deltaX, deltaY);
+          return;
+        }
+        if (typeof mouse.wheel === "function") {
+          await mouse.wheel(deltaX, deltaY);
+        }
+      },
+      async clipboardRead() {
+        const clipboardApi = nut.clipboard ?? nut.Clipboard;
+        if (clipboardApi?.getAll?.content) {
+          return String((await clipboardApi.getAll.content()) ?? "");
+        }
+        if (clipboardApi?.getString) {
+          return String((await clipboardApi.getString()) ?? "");
+        }
+        throw new Error("Native clipboard read unavailable. Install @nut-tree-fork/nut-js clipboard provider.");
+      },
+      async clipboardWrite(text) {
+        const clipboardApi = nut.clipboard ?? nut.Clipboard;
+        if (clipboardApi?.set?.content) {
+          await clipboardApi.set.content(text);
+          return;
+        }
+        if (clipboardApi?.setString) {
+          await clipboardApi.setString(text);
+          return;
+        }
+        throw new Error("Native clipboard write unavailable. Install @nut-tree-fork/nut-js clipboard provider.");
       },
     };
 
