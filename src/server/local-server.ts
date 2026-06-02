@@ -17,6 +17,7 @@ import {
 import { log } from "./log.js";
 import { metrics, renderPrometheus } from "./metrics.js";
 import { parseIncomingContext, type RequestContext } from "./request-context.js";
+import { listFeatureFlags } from "./feature-flags.js";
 
 // When OMNI_DISABLE_CLIENT_ASSETS=1, the fallthrough returns 404 instead of
 // serving static client assets. Used in cloud mode where there is no client.
@@ -169,6 +170,13 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
             daemonInstanceId,
             tenantScoping: TENANT_SCOPING ? "enforce" : "off",
           });
+        }
+
+        // P8-07: feature flags listing. No auth — this is a read-only
+        // introspection endpoint (no mutation in v0.3). Returns the
+        // current state of every OMNI_FEATURE_* env var.
+        if ((method === "GET" || method === "HEAD") && url.pathname === "/api/features") {
+          return writeJson(response, 200, { features: listFeatureFlags() });
         }
 
         if (method === "GET" && url.pathname === "/api/sessions") {
