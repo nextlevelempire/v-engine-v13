@@ -26,9 +26,12 @@ assert.match(src, /windowStart/, "must track windowStart in each bucket");
 assert.match(src, /recordAuthFailure/, "must have a recordAuthFailure function");
 assert.match(src, /checkAuthRateLimit/, "must have a checkAuthRateLimit function");
 
-// 429 path on rate limit exceeded
-assert.match(src, /err\.httpStatus\s*=\s*429/, "rate-limit error must use httpStatus=429");
-assert.match(src, /Auth rate limit exceeded/, "error message must be recognizable for rate-limit");
+// 429 path on rate limit exceeded — now via typed error class
+const errorsSrc = fs.readFileSync("src/server/omni-errors.ts", "utf8");
+assert.match(errorsSrc, /OmniAuthRateLimitError/, "must have OmniAuthRateLimitError class");
+assert.match(errorsSrc, /httpStatus:\s*429/, "OmniAuthRateLimitError must use httpStatus 429");
+assert.match(errorsSrc, /auth\.rate_limited/, "must use code auth.rate_limited");
+assert.match(src, /throw new OmniAuthRateLimitError/, "local-server must throw the typed error");
 
 // Hooked into verifyRequestGrant
 assert.match(src, /checkAuthRateLimit\(ip,\s*tokenHint\)/, "verifyRequestGrant must call checkAuthRateLimit before verify");

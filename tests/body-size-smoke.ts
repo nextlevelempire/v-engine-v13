@@ -21,8 +21,11 @@ assert.match(expr, /^[\d\s*()]+$/, `default expression must be pure arithmetic, 
 const defaultBytes = Function(`"use strict"; return (${expr})`)();
 assert.equal(defaultBytes, 10 * 1024 * 1024, "default must be 10 MB");
 
-// 413 status code path
-assert.match(src, /httpStatus\s*=\s*413/, "must throw with httpStatus=413 when limit exceeded");
-assert.match(src, /payload\s*too\s*large|exceeds.*limit|body\s*size/i, "error mapper must recognize body-size errors");
+// 413 status code path — now via typed error class
+const errorsSrc = fs.readFileSync("src/server/omni-errors.ts", "utf8");
+assert.match(errorsSrc, /OmniPayloadTooLargeError/, "must have OmniPayloadTooLargeError class");
+assert.match(errorsSrc, /httpStatus:\s*413/, "OmniPayloadTooLargeError must use httpStatus 413");
+assert.match(errorsSrc, /payload\.too_large/, "must use code payload.too_large");
+assert.match(src, /throw new OmniPayloadTooLargeError/, "local-server must throw the typed error");
 
 console.log("body-size-limit unit test ok");

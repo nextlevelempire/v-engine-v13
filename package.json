@@ -22,7 +22,8 @@
     "smoke:parallel-cap": "tsx tests/parallel-cap-smoke.ts",
     "smoke:body-size": "tsx tests/body-size-smoke.ts",
     "smoke:request-timeout": "tsx tests/request-timeout-smoke.ts",
-    "smoke:auth-rate-limit": "tsx tests/auth-rate-limit-smoke.ts"
+    "smoke:auth-rate-limit": "tsx tests/auth-rate-limit-smoke.ts",
+    "smoke:typed-errors": "tsx tests/typed-errors-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",

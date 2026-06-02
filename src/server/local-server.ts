@@ -8,6 +8,11 @@ import {
   readRuntimeGrantToken,
   verifyRuntimeGrant,
 } from "./runtime-grant.js";
+import {
+  OmniError,
+  OmniAuthRateLimitError,
+  OmniPayloadTooLargeError,
+} from "./omni-errors.js";
 
 // When OMNI_DISABLE_CLIENT_ASSETS=1, the fallthrough returns 404 instead of
 // serving static client assets. Used in cloud mode where there is no client.
@@ -225,6 +230,14 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
 
         return writeJson(response, 404, { error: "Not found", ok: false });
       } catch (error) {
+        // Typed error path: OmniError subclasses carry httpStatus,
+        // retryAfterMs, code, hint, details. The response body
+        // includes all of these for client-side handling.
+        if (error instanceof OmniError) {
+          return writeJson(response, error.httpStatus, error.toJSON());
+        }
+        // Legacy / unknown error: fall back to regex-based mapping
+        // so we don't regress on existing v0.1 throw-sites.
         const message = error instanceof Error ? error.message : String(error);
         const explicitStatus = (error as { httpStatus?: number })?.httpStatus;
         const statusCode = explicitStatus
@@ -351,12 +364,7 @@ function verifyRequestGrant(
   // reject before doing the (relatively expensive) signature check.
   const limit = checkAuthRateLimit(ip, tokenHint);
   if (limit.limited) {
-    const err = new Error(
-      `Auth rate limit exceeded: ${AUTH_FAIL_LIMIT} failures in ${AUTH_FAIL_WINDOW_MS} ms`,
-    ) as Error & { httpStatus?: number; retryAfterMs?: number };
-    err.httpStatus = 429;
-    err.retryAfterMs = limit.retryAfterMs;
-    throw err;
+    throw new OmniAuthRateLimitError(limit.retryAfterMs);
   }
 
   try {
@@ -490,11 +498,7 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     total += buf.length;
     if (total > BODY_SIZE_LIMIT) {
-      const err = new Error(
-        `Request body exceeds OMNI_BODY_SIZE_LIMIT=${BODY_SIZE_LIMIT} bytes`,
-      ) as Error & { httpStatus?: number };
-      err.httpStatus = 413;
-      throw err;
+      throw new OmniPayloadTooLargeError(total, BODY_SIZE_LIMIT);
     }
     chunks.push(buf);
   }
