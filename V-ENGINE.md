@@ -66,6 +66,7 @@ GET /api/sessions?token=<token>
 | `/api/sessions/:sessionId/artifacts` | GET | `sessions.read` |
 | `/api/sessions/:sessionId/artifacts/:artifactId` | GET | `sessions.read` |
 | `/api/sessions/:sessionId/action-log` | GET | `sessions.command` (paginated: `?limit=N&before=ISO_TS`) |
+| `/api/sessions/:sessionId/screenshots` | GET | `artifacts.read` (screenshot-only timeline) |
 | `/api/vault/:service` | GET | `vault.read` |
 | `/api/vault/:service/load` | POST | `vault.read` |
 | `/api/vault/:service/save` | POST | `vault.write` |

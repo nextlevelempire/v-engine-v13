@@ -1,27 +1,10 @@
 /**
  * Unit test for paginated actionLog (P4-04).
- * Tests the service.listActionLog method directly without launching Chrome.
+ * Tests source-level patterns for the service method and HTTP endpoint.
  */
 import assert from "node:assert/strict";
-import path from "node:path";
 import fs from "node:fs";
 
-process.env.OMNI_HOME = path.resolve(".omni-smoke-home");
-
-const { OmniStandaloneService } = await import("../src/server/service.js");
-
-// Create a service instance and a session, then push synthetic log entries
-// via the public API surface (we can't easily call the private
-// record.actionLog.unshift — instead we test the pagination logic via
-// listActionLog which is what the HTTP endpoint uses).
-
-const svc = OmniStandaloneService.getInstance ? OmniStandaloneService.getInstance() : new OmniStandaloneService();
-const sessionId = "test-action-log-session";
-// Try to create the session via createSession — this will launch Chrome
-// (slow). For unit testing, we can directly manipulate via reflection,
-// but that's brittle. Instead, test the source code patterns.
-
-// Better: read the source and verify pagination semantics.
 const serviceSrc = fs.readFileSync("src/server/service.ts", "utf8");
 const localSrc = fs.readFileSync("src/server/local-server.ts", "utf8");
 

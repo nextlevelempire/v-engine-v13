@@ -30,7 +30,8 @@
     "smoke:structured-logging": "tsx tests/structured-logging-smoke.ts",
     "smoke:metrics": "tsx tests/metrics-smoke.ts",
     "smoke:request-context": "tsx tests/request-context-smoke.ts",
-    "smoke:action-log": "tsx tests/action-log-smoke.ts"
+    "smoke:action-log": "tsx tests/action-log-smoke.ts",
+    "smoke:screenshots": "tsx tests/screenshots-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",

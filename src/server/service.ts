@@ -417,6 +417,12 @@ export class OmniStandaloneService {
     return loadVaultEntry(service, userId);
   }
 
+  // P4-05: timeline of screenshot artifacts for a session, newest-first.
+  // Filters the artifacts list to entries typed as 'screenshot'.
+  listScreenshots(sessionId: string, userId?: string | null): Array<Record<string, unknown>> {
+    return this.listArtifacts(sessionId, userId).filter((a) => a.type === "screenshot");
+  }
+
   listArtifacts(sessionId: string, userId?: string | null): Array<Record<string, unknown>> {
     const liveRecord = this.sessions.get(sessionId);
     const rootDir = liveRecord

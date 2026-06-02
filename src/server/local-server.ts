@@ -284,6 +284,16 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
           return writeJson(response, 200, { entries, sessionId });
         }
 
+        // P4-05: screenshots timeline. Returns only artifacts typed as
+        // 'screenshot', newest-first.
+        const screenshotsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/screenshots$/);
+        if (method === "GET" && screenshotsMatch) {
+          const sessionId = decodeURIComponent(screenshotsMatch[1] || "");
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "artifacts.read", sessionId);
+          const screenshots = service.listScreenshots(sessionId, claims.sub);
+          return writeJson(response, 200, { sessionId, screenshots });
+        }
+
         const artifactMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/artifacts\/([^/]+)$/);
         if (method === "GET" && artifactMatch) {
           const sessionId = decodeURIComponent(artifactMatch[1] || "");
