@@ -25,6 +25,7 @@ const ALLOWED_ORIGINS = new Set([
 const DEFAULT_PORT = numberFromEnv("PORT", numberFromEnv("OMNI_PORT", 4011));
 const LISTEN_HOST = process.env.OMNI_LISTEN_HOST?.trim() || "127.0.0.1";
 const BODY_SIZE_LIMIT = numberFromEnv("OMNI_BODY_SIZE_LIMIT", 10 * 1024 * 1024); // 10 MB
+const REQUEST_TIMEOUT_MS = numberFromEnv("OMNI_REQUEST_TIMEOUT_MS", 60_000); // 60 s per request
 const RUNTIME_VERSION = "4.0.0";
 
 export async function startStandaloneServer(port: number = DEFAULT_PORT) {
@@ -39,206 +40,232 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
       return;
     }
 
-    try {
-      const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
-      const method = request.method || "GET";
+    const handlerDone = (async () => {
+      try {
+        const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
+        const method = request.method || "GET";
 
-      if ((method === "GET" || method === "HEAD") && url.pathname === "/api/health") {
-        // Scope-free grant validation: verify the token is structurally valid
-        // (signature, expiry, daemon match) but do NOT require a specific scope.
-        // The control plane's pingRuntimeHealth calls health as a preflight
-        // before issuing any session-scoped grant — requiring a scope here
-        // would create a bootstrapping deadlock.
-        verifyRequestGrant(request, url, daemonInstanceId, "");
-        return writeJson(response, 200, buildHealthPayload(port, daemonInstanceId));
-      }
-
-      if (method === "POST" && url.pathname === "/api/runtime/attach") {
-        const claims = verifyRequestGrant(request, url, daemonInstanceId, "runtime.attach");
-        return writeJson(response, 200, {
-          attached: true,
-          claims,
-          daemonInstanceId,
-        });
-      }
-
-      if (method === "GET" && url.pathname === "/api/sessions") {
-        const claims = verifyRequestGrant(request, url, daemonInstanceId, "sessions.create");
-        return writeJson(response, 200, {
-          sessions: service.listSessions({ orgId: claims.orgId, userId: claims.sub }),
-        });
-      }
-
-      if (method === "POST" && url.pathname === "/api/sessions") {
-        const claims = verifyRequestGrant(request, url, daemonInstanceId, "sessions.create");
-        const payload = (await readJsonBody(request)) as {
-          creditBudget?: number;
-          objective?: string | null;
-          operatorSessionId?: number | null;
-          orgId?: string | null;
-          persistent?: boolean;
-          policyVersion?: string | null;
-          sessionId?: string;
-          userId?: string | null;
-        };
-        if (payload.orgId && payload.orgId !== claims.orgId) {
-          throw new Error("Grant org mismatch.");
+        if ((method === "GET" || method === "HEAD") && url.pathname === "/api/health") {
+          // Scope-free grant validation: verify the token is structurally valid
+          // (signature, expiry, daemon match) but do NOT require a specific scope.
+          // The control plane's pingRuntimeHealth calls health as a preflight
+          // before issuing any session-scoped grant — requiring a scope here
+          // would create a bootstrapping deadlock.
+          verifyRequestGrant(request, url, daemonInstanceId, "");
+          return writeJson(response, 200, buildHealthPayload(port, daemonInstanceId));
         }
-        if (payload.userId && payload.userId !== claims.sub) {
-          throw new Error("Grant user mismatch.");
+
+        if (method === "POST" && url.pathname === "/api/runtime/attach") {
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "runtime.attach");
+          return writeJson(response, 200, {
+            attached: true,
+            claims,
+            daemonInstanceId,
+          });
         }
-        const session = await service.createSession({
-          agentId: claims.sub,
-          creditBudget: payload.creditBudget ?? claims.creditBudget ?? 0,
-          objective: payload.objective,
-          operatorSessionId: payload.operatorSessionId ?? null,
-          orgId: claims.orgId,
-          persistent: payload.persistent === true,
-          policyVersion: payload.policyVersion ?? claims.policyVersion,
-          sessionId: payload.sessionId ?? claims.sessionId,
-          userId: claims.sub,
-        });
-        return writeJson(response, 201, session);
-      }
 
-      if (method === "GET" && url.pathname === "/api/vault") {
-        const claims = verifyRequestGrant(request, url, daemonInstanceId, "vault.read");
-        return writeJson(response, 200, { entries: service.listVaultEntries(claims.sub) });
-      }
+        if (method === "GET" && url.pathname === "/api/sessions") {
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "sessions.create");
+          return writeJson(response, 200, {
+            sessions: service.listSessions({ orgId: claims.orgId, userId: claims.sub }),
+          });
+        }
 
-      const vaultGetMatch = url.pathname.match(/^\/api\/vault\/([^/]+)$/);
-      if (method === "GET" && vaultGetMatch) {
-        const claims = verifyRequestGrant(request, url, daemonInstanceId, "vault.read");
-        const serviceName = decodeURIComponent(vaultGetMatch[1] || "");
-        return writeJson(response, 200, { entry: service.getVaultEntry(serviceName, claims.sub) });
-      }
+        if (method === "POST" && url.pathname === "/api/sessions") {
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "sessions.create");
+          const payload = (await readJsonBody(request)) as {
+            creditBudget?: number;
+            objective?: string | null;
+            operatorSessionId?: number | null;
+            orgId?: string | null;
+            persistent?: boolean;
+            policyVersion?: string | null;
+            sessionId?: string;
+            userId?: string | null;
+          };
+          if (payload.orgId && payload.orgId !== claims.orgId) {
+            throw new Error("Grant org mismatch.");
+          }
+          if (payload.userId && payload.userId !== claims.sub) {
+            throw new Error("Grant user mismatch.");
+          }
+          const session = await service.createSession({
+            agentId: claims.sub,
+            creditBudget: payload.creditBudget ?? claims.creditBudget ?? 0,
+            objective: payload.objective,
+            operatorSessionId: payload.operatorSessionId ?? null,
+            orgId: claims.orgId,
+            persistent: payload.persistent === true,
+            policyVersion: payload.policyVersion ?? claims.policyVersion,
+            sessionId: payload.sessionId ?? claims.sessionId,
+            userId: claims.sub,
+          });
+          return writeJson(response, 201, session);
+        }
 
-      const vaultSaveMatch = url.pathname.match(/^\/api\/vault\/([^/]+)\/save$/);
-      if (method === "POST" && vaultSaveMatch) {
-        const claims = verifyRequestGrant(request, url, daemonInstanceId, "vault.write");
-        const serviceName = decodeURIComponent(vaultSaveMatch[1] || "");
-        const payload = (await readJsonBody(request)) as Record<string, unknown>;
-        const entry = service.saveVaultPayload(serviceName, claims.sub, payload as any, claims.orgId);
-        return writeJson(response, 200, entry);
-      }
+        if (method === "GET" && url.pathname === "/api/vault") {
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "vault.read");
+          return writeJson(response, 200, { entries: service.listVaultEntries(claims.sub) });
+        }
 
-      const vaultLoadMatch = url.pathname.match(/^\/api\/vault\/([^/]+)\/load$/);
-      if (method === "POST" && vaultLoadMatch) {
-        const claims = verifyRequestGrant(request, url, daemonInstanceId, "vault.read");
-        const serviceName = decodeURIComponent(vaultLoadMatch[1] || "");
-        const entry = service.loadVaultPayload(serviceName, claims.sub);
-        return writeJson(response, 200, entry ?? {});
-      }
+        const vaultGetMatch = url.pathname.match(/^\/api\/vault\/([^/]+)$/);
+        if (method === "GET" && vaultGetMatch) {
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "vault.read");
+          const serviceName = decodeURIComponent(vaultGetMatch[1] || "");
+          return writeJson(response, 200, { entry: service.getVaultEntry(serviceName, claims.sub) });
+        }
 
-      const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
-      if (method === "GET" && sessionMatch) {
-        const sessionId = decodeURIComponent(sessionMatch[1] || "");
-        verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
-        const status = await service.getSessionStatus(sessionId);
-        return writeJson(response, 200, status);
-      }
+        const vaultSaveMatch = url.pathname.match(/^\/api\/vault\/([^/]+)\/save$/);
+        if (method === "POST" && vaultSaveMatch) {
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "vault.write");
+          const serviceName = decodeURIComponent(vaultSaveMatch[1] || "");
+          const payload = (await readJsonBody(request)) as Record<string, unknown>;
+          const entry = service.saveVaultPayload(serviceName, claims.sub, payload as any, claims.orgId);
+          return writeJson(response, 200, entry);
+        }
 
-      const commandMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/command$/);
-      if (method === "POST" && commandMatch) {
-        const sessionId = decodeURIComponent(commandMatch[1] || "");
-        const claims = verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
-        const command = (await readJsonBody(request)) as SessionCommand & { agentId?: string };
-        const result = await service.executeCommand(sessionId, command, {
-          agentId: claims.sub,
-          ip: request.socket.remoteAddress,
-          orgId: claims.orgId,
-          userAgent: request.headers["user-agent"] || null,
-          userId: claims.sub,
-        });
-        return writeJson(response, 200, result);
-      }
+        const vaultLoadMatch = url.pathname.match(/^\/api\/vault\/([^/]+)\/load$/);
+        if (method === "POST" && vaultLoadMatch) {
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "vault.read");
+          const serviceName = decodeURIComponent(vaultLoadMatch[1] || "");
+          const entry = service.loadVaultPayload(serviceName, claims.sub);
+          return writeJson(response, 200, entry ?? {});
+        }
 
-      const screenshotMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/screenshot$/);
-      if (method === "POST" && screenshotMatch) {
-        const sessionId = decodeURIComponent(screenshotMatch[1] || "");
-        const claims = verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
-        const payload = (await readJsonBody(request)) as { label?: string };
-        const result = await service.executeCommand(
-          sessionId,
-          {
-            label: payload.label,
-            type: "screenshot",
-          },
-          {
+        const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
+        if (method === "GET" && sessionMatch) {
+          const sessionId = decodeURIComponent(sessionMatch[1] || "");
+          verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
+          const status = await service.getSessionStatus(sessionId);
+          return writeJson(response, 200, status);
+        }
+
+        const commandMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/command$/);
+        if (method === "POST" && commandMatch) {
+          const sessionId = decodeURIComponent(commandMatch[1] || "");
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
+          const command = (await readJsonBody(request)) as SessionCommand & { agentId?: string };
+          const result = await service.executeCommand(sessionId, command, {
             agentId: claims.sub,
             ip: request.socket.remoteAddress,
             orgId: claims.orgId,
             userAgent: request.headers["user-agent"] || null,
             userId: claims.sub,
-          },
-        );
-        return writeJson(response, 200, result);
-      }
-
-      const artifactsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/artifacts$/);
-      if (method === "GET" && artifactsMatch) {
-        const sessionId = decodeURIComponent(artifactsMatch[1] || "");
-        const claims = verifyRequestGrant(request, url, daemonInstanceId, "artifacts.read", sessionId);
-        return writeJson(response, 200, { artifacts: service.listArtifacts(sessionId, claims.sub) });
-      }
-
-      const artifactMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/artifacts\/([^/]+)$/);
-      if (method === "GET" && artifactMatch) {
-        const sessionId = decodeURIComponent(artifactMatch[1] || "");
-        const claims = verifyRequestGrant(request, url, daemonInstanceId, "artifacts.read", sessionId);
-        const artifactId = decodeURIComponent(artifactMatch[2] || "");
-        const artifact = service.getArtifact(sessionId, artifactId, claims.sub);
-        if (!artifact) {
-          return writeJson(response, 404, { error: "Artifact not found", ok: false });
-        }
-        const targetPath = typeof artifact.path === "string" ? artifact.path : null;
-        if (targetPath && fs.existsSync(targetPath)) {
-          response.writeHead(200, {
-            "content-type": contentTypeFor(targetPath),
           });
-          response.end(fs.readFileSync(targetPath));
-          return;
+          return writeJson(response, 200, result);
         }
-        return writeJson(response, 200, artifact);
-      }
 
-      const eventsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/events$/);
-      if (method === "GET" && eventsMatch) {
-        const sessionId = decodeURIComponent(eventsMatch[1] || "");
-        verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
-        return openEventStream(
-          response,
-          sessionId,
-          service.subscribe(sessionId, (event) => {
-            writeEvent(response, event);
-          }),
-        );
-      }
+        const screenshotMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/screenshot$/);
+        if (method === "POST" && screenshotMatch) {
+          const sessionId = decodeURIComponent(screenshotMatch[1] || "");
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
+          const payload = (await readJsonBody(request)) as { label?: string };
+          const result = await service.executeCommand(
+            sessionId,
+            {
+              label: payload.label,
+              type: "screenshot",
+            },
+            {
+              agentId: claims.sub,
+              ip: request.socket.remoteAddress,
+              orgId: claims.orgId,
+              userAgent: request.headers["user-agent"] || null,
+              userId: claims.sub,
+            },
+          );
+          return writeJson(response, 200, result);
+        }
 
-      if (!DISABLE_CLIENT_ASSETS && !url.pathname.startsWith("/api/")) {
-        return serveClientAsset(url.pathname, response);
-      }
+        const artifactsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/artifacts$/);
+        if (method === "GET" && artifactsMatch) {
+          const sessionId = decodeURIComponent(artifactsMatch[1] || "");
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "artifacts.read", sessionId);
+          return writeJson(response, 200, { artifacts: service.listArtifacts(sessionId, claims.sub) });
+        }
 
-      return writeJson(response, 404, { error: "Not found", ok: false });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const explicitStatus = (error as { httpStatus?: number })?.httpStatus;
-      const statusCode = explicitStatus
-        ?? (/grant|unauthorized|scope|token/i.test(message)
-          ? 401
-          : /budget/i.test(message)
-            ? 402
-            : /not\s*found|unknown\s+omni\s+session|does\s+not\s+exist/i.test(message)
-              ? 404
-              : /rate\s*limit|too\s*many|throttl/i.test(message)
-                ? 429
-                : /body\s*size|payload\s*too\s*large|exceeds.*limit/i.test(message)
-                  ? 413
-                  : 500);
-      return writeJson(response, statusCode, {
-        error: message,
-        ok: false,
-      });
+        const artifactMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/artifacts\/([^/]+)$/);
+        if (method === "GET" && artifactMatch) {
+          const sessionId = decodeURIComponent(artifactMatch[1] || "");
+          const claims = verifyRequestGrant(request, url, daemonInstanceId, "artifacts.read", sessionId);
+          const artifactId = decodeURIComponent(artifactMatch[2] || "");
+          const artifact = service.getArtifact(sessionId, artifactId, claims.sub);
+          if (!artifact) {
+            return writeJson(response, 404, { error: "Artifact not found", ok: false });
+          }
+          const targetPath = typeof artifact.path === "string" ? artifact.path : null;
+          if (targetPath && fs.existsSync(targetPath)) {
+            response.writeHead(200, {
+              "content-type": contentTypeFor(targetPath),
+            });
+            response.end(fs.readFileSync(targetPath));
+            return;
+          }
+          return writeJson(response, 200, artifact);
+        }
+
+        const eventsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/events$/);
+        if (method === "GET" && eventsMatch) {
+          const sessionId = decodeURIComponent(eventsMatch[1] || "");
+          verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
+          return openEventStream(
+            response,
+            sessionId,
+            service.subscribe(sessionId, (event) => {
+              writeEvent(response, event);
+            }),
+          );
+        }
+
+        if (!DISABLE_CLIENT_ASSETS && !url.pathname.startsWith("/api/")) {
+          return serveClientAsset(url.pathname, response);
+        }
+
+        return writeJson(response, 404, { error: "Not found", ok: false });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const explicitStatus = (error as { httpStatus?: number })?.httpStatus;
+        const statusCode = explicitStatus
+          ?? (/grant|unauthorized|scope|token/i.test(message)
+            ? 401
+            : /budget/i.test(message)
+              ? 402
+              : /not\s*found|unknown\s+omni\s+session|does\s*not\s*exist/i.test(message)
+                ? 404
+                : /rate\s*limit|too\s*many|throttl/i.test(message)
+                  ? 429
+                  : /body\s*size|payload\s*too\s*large|exceeds.*limit/i.test(message)
+                    ? 413
+                    : 500);
+        return writeJson(response, statusCode, {
+          error: message,
+          ok: false,
+        });
+      }
+    })();
+
+    // Race the handler against a hard timeout. If the handler exceeds
+    // OMNI_REQUEST_TIMEOUT_MS we return 504 Gateway Timeout to the client.
+    // The handler promise is NOT cancellable from here, but it will resolve
+    // on its own and the response guard inside the IIFE prevents double-writes.
+    let timedOut = false;
+    const timeoutPromise = new Promise<"timeout">((resolve) => {
+      setTimeout(() => {
+        timedOut = true;
+        resolve("timeout");
+      }, REQUEST_TIMEOUT_MS);
+    });
+    await Promise.race([handlerDone, timeoutPromise]);
+    if (timedOut && !response.writableEnded) {
+      console.error(`[request-timeout] ${request.method} ${request.url} killed after ${REQUEST_TIMEOUT_MS}ms`);
+      try {
+        writeJson(response, 504, {
+          error: `Request exceeded OMNI_REQUEST_TIMEOUT_MS=${REQUEST_TIMEOUT_MS} ms`,
+          ok: false,
+        });
+      } catch {
+        // response already torn down
+      }
     }
   });
 

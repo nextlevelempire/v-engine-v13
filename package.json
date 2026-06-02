@@ -20,7 +20,8 @@
     "smoke:env": "tsx tests/env-smoke.ts",
     "smoke:listen-host": "tsx tests/listen-host-smoke.ts",
     "smoke:parallel-cap": "tsx tests/parallel-cap-smoke.ts",
-    "smoke:body-size": "tsx tests/body-size-smoke.ts"
+    "smoke:body-size": "tsx tests/body-size-smoke.ts",
+    "smoke:request-timeout": "tsx tests/request-timeout-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",
