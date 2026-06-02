@@ -25,6 +25,7 @@ import {
 import { sanitizeProtectedRuntimeValue } from "../security/trade-secret-guard.js";
 import { LocalComputerController, type ComputerAction } from "../runtime/local-computer.js";
 import { getEnabledTakeoverCapabilities } from "./takeover-config.js";
+import { emitWebhookEvent } from "./webhooks.js";
 
 export type SessionEvent = {
   data: Record<string, unknown>;
@@ -210,6 +211,7 @@ export class OmniStandaloneService {
 
     const snapshot = await this.describeSession(record);
     this.emit(record, "session.created", snapshot);
+    emitWebhookEvent("session.created", sessionId, record.orgId, record.userId, { sessionId });
     void this.syncSessionSnapshot(record);
     return snapshot;
   }
@@ -308,6 +310,11 @@ export class OmniStandaloneService {
       commandType: command.type,
       remainingBudget: record.remainingBudget,
       result,
+    });
+    emitWebhookEvent("command.completed", record.sessionId, record.orgId, record.userId, {
+      agentId,
+      commandType: command.type,
+      remainingBudget: record.remainingBudget,
     });
     void this.syncSessionSnapshot(record);
     if (
@@ -481,6 +488,7 @@ export class OmniStandaloneService {
     this.sessions.delete(sessionId);
     await record.core.close();
     record.sessionManager.dispose();
+    emitWebhookEvent("session.closed", sessionId, record.orgId, record.userId, { sessionId });
   }
 
   async shutdown(): Promise<void> {
@@ -757,6 +765,11 @@ export class OmniStandaloneService {
         reason: "parallel_cap",
         cap,
         currentSize: this.sessions.size,
+      });
+      emitWebhookEvent("session.evicted", oldest.sessionId, oldest.orgId, oldest.userId, {
+        cap,
+        currentSize: this.sessions.size,
+        reason: "parallel_cap",
       });
       await this.closeSession(oldest.sessionId);
     }
