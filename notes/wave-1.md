@@ -24,7 +24,12 @@
 
 ## Decisions
 
-- (filled in as we go)
+### [Task 1] P0-01 — V-ENGINE.md field rename / create
+- The v0.1 source has no V-ENGINE.md (it has README.md, which is project intro, not API ref). The v0.2 finding P0-01 was misnamed — it's really "create V-ENGINE.md as a proper API reference, with `sessionId` field naming."
+- Created `V-ENGINE.md` at the working repo root (113 lines).
+- Documented: all field names, all endpoints, env vars, error shape, SSE event types.
+- Verified: live curl on `POST /api/sessions` returns response with `sessionId: "22d4daca-..."` (not `id`).
+- Regression: v0.1 source code already uses `sessionId` — no code change needed. Doc-only fix.
 
 ## Blockers
 

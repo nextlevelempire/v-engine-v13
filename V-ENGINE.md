@@ -1,0 +1,191 @@
+# V-ENGINE.md — V-Engine API Reference
+
+> The V-Engine is a standalone browser-automation runtime. It exposes an HTTP+SSE API for creating browser sessions, driving them with mouse/keyboard commands, observing them via screenshots, and persisting state.
+
+**This document is the canonical field reference.** When the README and this document disagree, **this document wins**.
+
+---
+
+## 1. Field Reference
+
+All session identifiers use the field name **`sessionId`**. The v0.1 README occasionally referred to the field as `id`; that was wrong. Every API request body, response body, SSE event, and log line uses `sessionId`.
+
+| Field | Type | Where | Description |
+|---|---|---|---|
+| `sessionId` | string (UUID) | request, response, SSE | The unique session identifier. |
+| `orgId` | string | request, response | The organization the session belongs to. Required when scopes are scoped to an org. |
+| `userId` | string | request, response | The user/agent who owns the session. |
+| `agentId` | string | request, response | The agent id (typically same as `userId`). |
+| `creditBudget` | integer | request, response | Optional integer cap on session resource consumption. Default 0. |
+| `objective` | string | request | Optional human-readable description of what the session is for. |
+| `policyVersion` | string | request | Optional policy version override. |
+| `operatorSessionId` | integer | request | Optional correlation id for operator-mode sessions. |
+| `persistent` | boolean | request | If true, the session is persisted across restarts. Default false. |
+| `type` | string | SSE | The event type, e.g. `checkpoint.created`, `execution`, `observation.captured`. |
+| `data` | object | SSE | The event payload, type-specific. |
+| `eventId` | string | SSE | Unique event id. |
+| `timestamp` | string (ISO 8601) | SSE, status | When the event was emitted or the status was sampled. |
+
+> **Breaking change from v0.1:** If you were following the v0.1 README, you were looking for `id`. Use `sessionId` instead.
+
+---
+
+## 2. Authentication
+
+All requests (including `/api/health`) require a runtime grant. Grant format is `header.payload.signature` (base64url-encoded, HMAC-SHA256).
+
+**Sending a grant:**
+```http
+Authorization: Bearer <token>
+```
+or
+```http
+GET /api/sessions?token=<token>
+```
+
+**Required claims:**
+- `daemonInstanceId` — must match the server's instance id
+- `exp` — must be in the future
+- `iss`, `orgId`, `sub`, `scopes` — see `src/server/runtime-grant.ts` for the full schema
+
+**Default scopes by endpoint:**
+| Endpoint | Method | Required scope |
+|---|---|---|
+| `/api/health` | GET | (none — scope-free preflight) |
+| `/api/runtime/attach` | POST | `runtime.attach` |
+| `/api/sessions` | GET | `sessions.create` |
+| `/api/sessions` | POST | `sessions.create` |
+| `/api/sessions/:sessionId/command` | POST | `sessions.command` |
+| `/api/sessions/:sessionId/events` | GET | `sessions.read` |
+| `/api/sessions/:sessionId` | GET | `sessions.read` |
+| `/api/sessions/:sessionId/screenshot` | GET | `sessions.read` |
+| `/api/sessions/:sessionId/artifacts` | GET | `sessions.read` |
+| `/api/sessions/:sessionId/artifacts/:artifactId` | GET | `sessions.read` |
+| `/api/vault/:service` | GET | `vault.read` |
+| `/api/vault/:service/load` | POST | `vault.read` |
+| `/api/vault/:service/save` | POST | `vault.write` |
+
+---
+
+## 3. Endpoints
+
+### GET /api/health
+**Scope-free.** Used as a preflight by control planes.
+```json
+{
+  "ok": true,
+  "transport": "http+sse",
+  "daemonInstanceId": "...",
+  "version": "4.0.0",
+  "capabilities": ["browser"]
+}
+```
+
+### POST /api/sessions
+Create a new session. Requires `sessions.create` scope.
+```json
+// Request
+{
+  "sessionId": "optional-pre-generated-uuid",
+  "objective": "Buy concert tickets",
+  "creditBudget": 100,
+  "persistent": false
+}
+
+// 201 Response
+{
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "launching",
+  "createdAt": "2026-06-02T13:55:00.000Z",
+  "objective": "Buy concert tickets",
+  "creditBudget": 100,
+  "remainingBudget": 100,
+  "userId": "...",
+  "orgId": "..."
+}
+```
+
+### POST /api/sessions/:sessionId/command
+Send a command to a session.
+```json
+// Request
+{
+  "type": "navigate",
+  "url": "https://example.com"
+}
+
+// Response
+{
+  "ok": true,
+  "result": { "url": "https://example.com", "title": "Example" }
+}
+```
+
+**Command types (v0.1):** `navigate`, `click`, `type`, `screenshot`, `status`, `pause`, `resume`, `assistant_reply`, `directive`, `computer`.
+
+### GET /api/sessions/:sessionId/events
+Server-Sent Events stream. `event: <type>` / `data: <json>`. Includes `sessionId`, `eventId`, `timestamp`, `data` per event.
+
+### GET /api/sessions/:sessionId
+Returns current session state, including `status`, `lastActiveAt`, `commandCount`, `creditBudget`, `remainingBudget`, `actionLog` (recent entries), etc.
+
+### GET /api/sessions/:sessionId/screenshot
+Returns a PNG screenshot of the current viewport. May be slow on headless mode.
+
+### GET /api/sessions/:sessionId/artifacts
+Lists saved artifacts (screenshots, recordings, logs).
+
+### GET /api/sessions/:sessionId/artifacts/:artifactId
+Returns a single artifact (binary or JSON depending on type).
+
+### GET/POST /api/vault/:service
+Per-session encrypted vault. See `docs/PLAN-ENGINE-HARDENING.md` for details.
+
+---
+
+## 4. Environment Variables
+
+All env vars use the `OMNI_*` prefix. This is the V-Engine's own naming convention; do not change.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OMNI_PAYLOAD_ENCRYPTION_KEY` | (required in prod) | 32+ char secret for payload encryption |
+| `OMNI_PAYLOAD_ENCRYPTION_KEY_VERSION` | `v1` | Key version tag |
+| `OMNI_PORT` | `4011` | Local HTTP port |
+| `OMNI_HOME` | `~/.omni-browser` | Storage root |
+| `OMNI_ATTACH_TOKEN_TTL_MS` | `300000` | Attach-token lifetime |
+| `OMNI_AGENT_RPM` | `30` | Per-agent requests/minute |
+| `OMNI_BURST_RPS` | `10` | Short-burst requests/second |
+| `OMNI_SESSION_RPM` | `60` | Per-session requests/minute |
+| `OMNI_DASHBOARD_JWT_SECRET` | (dev fallback) | HMAC secret for runtime grants |
+| `OMNI_ALLOW_HEADLESS_FALLBACK` | `0` | Allow headless if visible Chrome launch fails |
+
+> **v0.3 additions** (being added in Wave 1): `OMNI_LISTEN_HOST` (default `127.0.0.1`), `OMNI_MAX_PARALLEL_SESSIONS` (default `50`), `OMNI_BODY_SIZE_LIMIT` (default `10485760`), `OMNI_TLS_CERT`, `OMNI_TLS_KEY`, `OMNI_CORS_ALLOWED_ORIGINS`, `OMNI_REQUEST_TIMEOUT_MS`, `OMNI_WATCHDOG_MS`.
+
+---
+
+## 5. Error Response Shape
+
+Errors are returned as JSON:
+```json
+{ "ok": false, "error": "human-readable message" }
+```
+
+> **v0.3 change:** Errors will be typed. Each error has a `code`, `message`, optional `hint`, and optional `retry_after_ms`. v0.1 used ad-hoc error strings — v0.3 normalizes them.
+
+---
+
+## 6. SSE Event Types
+
+`type` values include:
+- `checkpoint.created` — session state was snapshotted
+- `execution` — a command completed
+- `handoff.requested` — session wants to handoff to a human
+- `human_message` — a message from the human
+- `mission_log` — a log entry
+- `observation.captured` — a screenshot/observation was captured
+- `plan.created` — a plan was generated
+- `replay.bundle_created` — a replay bundle was saved
+- `verification.result` — a verification step completed
+
+Plus v0.3 additions (being added in Wave 1): `session.evicted` (parallel cap fired), `frustration_handoff` (Wave 5), `error.typed` (typed error event).
