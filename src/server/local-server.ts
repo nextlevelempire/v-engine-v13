@@ -73,6 +73,25 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
           return writeJson(response, 200, buildHealthPayload(port, daemonInstanceId));
         }
 
+        // K8s-style liveness/readiness probes (P8-01). No auth required —
+        // these are infrastructure endpoints, not API endpoints. /livez
+        // is a process-alive check (always 200 if Node is responding).
+        // /readyz returns 200 only if the runtime can serve traffic
+        // (no shutdown in progress, daemon instance is initialized).
+        if ((method === "GET" || method === "HEAD") && url.pathname === "/livez") {
+          return writeJson(response, 200, { ok: true, status: "live" });
+        }
+        if ((method === "GET" || method === "HEAD") && url.pathname === "/readyz") {
+          if (process.env.OMNI_SHUTTING_DOWN === "1") {
+            return writeJson(response, 503, { ok: false, status: "shutting_down" });
+          }
+          return writeJson(response, 200, { ok: true, status: "ready" });
+        }
+        if ((method === "GET" || method === "HEAD") && url.pathname === "/healthz") {
+          // Alias for /livez + /api/health union — kept for ops familiarity.
+          return writeJson(response, 200, { ok: true, status: "live" });
+        }
+
         if (method === "POST" && url.pathname === "/api/runtime/attach") {
           const claims = verifyRequestGrant(request, url, daemonInstanceId, "runtime.attach");
           return writeJson(response, 200, {
