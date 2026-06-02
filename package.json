@@ -26,7 +26,8 @@
     "smoke:typed-errors": "tsx tests/typed-errors-smoke.ts",
     "smoke:cors-allowlist": "tsx tests/cors-allowlist-smoke.ts",
     "smoke:healthz": "tsx tests/healthz-smoke.ts",
-    "smoke:tls": "tsx tests/tls-smoke.ts"
+    "smoke:tls": "tsx tests/tls-smoke.ts",
+    "smoke:structured-logging": "tsx tests/structured-logging-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",

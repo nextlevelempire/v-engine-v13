@@ -14,6 +14,7 @@ import {
   OmniAuthRateLimitError,
   OmniPayloadTooLargeError,
 } from "./omni-errors.js";
+import { log } from "./log.js";
 
 // When OMNI_DISABLE_CLIENT_ASSETS=1, the fallthrough returns 404 instead of
 // serving static client assets. Used in cloud mode where there is no client.
@@ -311,7 +312,12 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
     });
     await Promise.race([handlerDone, timeoutPromise]);
     if (timedOut && !response.writableEnded) {
-      console.error(`[request-timeout] ${request.method} ${request.url} killed after ${REQUEST_TIMEOUT_MS}ms`);
+      log.error("request.timeout", {
+        elapsedMs: REQUEST_TIMEOUT_MS,
+        limitMs: REQUEST_TIMEOUT_MS,
+        method: request.method,
+        url: request.url,
+      });
       try {
         writeJson(response, 504, {
           error: `Request exceeded OMNI_REQUEST_TIMEOUT_MS=${REQUEST_TIMEOUT_MS} ms`,
@@ -328,7 +334,7 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
     const cert = fs.readFileSync(TLS_CERT_PATH!);
     const key = fs.readFileSync(TLS_KEY_PATH!);
     server = createHttpsServer({ cert, key }, requestHandler);
-    console.log(`[start] TLS enabled (cert=${TLS_CERT_PATH})`);
+    log.info("start.tls_enabled", { certPath: TLS_CERT_PATH });
   } else {
     server = createHttpServer(requestHandler);
   }
@@ -336,7 +342,11 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
   await new Promise<void>((resolve) => {
     server.listen(port, LISTEN_HOST, resolve);
   });
-  console.log(`[start] listening on ${TLS_ENABLED ? "https" : "http"}://${LISTEN_HOST}:${port}`);
+  log.info("start.listening", {
+    host: LISTEN_HOST,
+    port,
+    protocol: TLS_ENABLED ? "https" : "http",
+  });
 
   return server;
 }
@@ -430,7 +440,7 @@ function verifyRequestGrant(
     return verifyRuntimeGrant(token, opts);
   } catch (error) {
     const result = recordAuthFailure(ip, tokenHint);
-    console.warn("[runtime.grant] verification failed", {
+    log.warn("auth.failed", {
       ...describeRuntimeGrantForDiagnostics(token),
       currentDaemonInstanceId: daemonInstanceId,
       failCount: result.count,
