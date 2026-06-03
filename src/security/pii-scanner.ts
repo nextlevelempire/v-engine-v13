@@ -6,7 +6,7 @@
 
 const PII_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   // Credentials / secrets
-  { pattern: /password\s*[:=]\s*\S+/gi, label: "PASSWORD" },
+  { pattern: /"?password"?\s*[:=]\s*"?\S+/gi, label: "PASSWORD" },
   { pattern: /api[_-]?key\s*[:=]\s*\S+/gi, label: "API_KEY" },
   { pattern: /secret\s*[:=]\s*\S+/gi, label: "SECRET" },
   { pattern: /token\s*[:=]\s*\S+/gi, label: "TOKEN" },
