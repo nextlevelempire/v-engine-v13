@@ -34,7 +34,7 @@ This wave has 24 findings spread across 4 sub-areas. Order chosen so each task h
 | 1 | Extend `ComputerAction` type + `local-computer.ts` with new low-level actions (right_click, double_click, shortcut, drag, scroll, hover, clipboard, file_upload, file_download, screenshot_element, fill_form, scroll_until, enter_frame, exit_frame, shadow DOM) | P1-01, P1-02, P1-03, P1-04, P1-05, P1-07, P1-08, P1-11 | Low-level actions | DONE (2026-06-02) |
 | 2 | Wrap new low-level actions as high-level commands in `service.ts` | P1-01..P1-08 | High-level commands | DONE (2026-06-02) |
 | 3 | Extend `ClickInput` to accept `text`, `coordinates`, `match_index` overloads | P1-01, P7-05 | Input shapes | DONE (2026-06-02) |
-| 4 | Session browser context: viewport, user_agent, locale, timezone, geolocation, permissions, color_scheme, device emulation | P1-09..P1-13 | Session context | pending |
+| 4 | Session browser context: viewport, user_agent, locale, timezone, geolocation, permissions, color_scheme, device emulation | P1-09..P1-13 | Session context | DONE (2026-06-02) |
 | 5 | AI helpers: `plan(goal)`, `execute_plan(plan_id)`, `next_step`, `describe_page` (AX tree), `find(text, fuzzy)`, `wait_for(predicate, timeout)` | P7-01, P7-02, P7-03, P7-04, P7-06 | AI helpers | pending |
 | 6 | CAPTCHA handling: `detect_captcha`, `wait_for_human`, `navigate_with_fallback`, solver-service integration (2captcha default) | P0-04 | CAPTCHA | pending |
 | 7 | Anti-bot stealth: `STEALTH_LEVEL` env (off/basic/aggressive), randomized UA/viewport/locale, `navigator.webdriver` override, language/headless marker removal | P0-05 | Stealth | pending |
@@ -205,3 +205,31 @@ Mark all Wave 2 findings as `Done` on the Tracker Sheet at the end of the wave.
 - `pnpm run typecheck` — TODO this turn
 - `pnpm run build:server` — TODO this turn
 - `pnpm run smoke:click-input` — TODO this turn
+
+## Task 4 (2026-06-02) — DONE
+
+**Findings covered:** P1-09..P1-13 (5 findings)
+
+**Files changed:**
+- `src/runtime/omni-session-manager.ts` — exported `BrowserContextOptions` type; imported `devices` from Playwright; added `mergeBrowserContextOptions()` helper; extended `createSession()` to accept `contextOptions` and pass them to `browser.newContext()`
+- `src/runtime/omni-core-clone.ts` — imported `BrowserContextOptions`; extended `initVault()` to accept and forward `contextOptions`
+- `src/server/service.ts` — extended `CreateSessionInput` with 8 new optional fields (viewport, userAgent, locale, timezoneId, geolocation, permissions, colorScheme, device); plumbed through to `initVault()`
+- `src/server/local-server.ts` — extended POST /api/sessions body type with 8 new optional fields; added 6 env-var reader helpers (`readStringFromEnv`, `readColorSchemeFromEnv`, `readDeviceFromEnv`, `readGeolocationFromEnv`, `readViewportFromEnv`); merged env defaults into the createSession call
+- `tests/browser-context-smoke.ts` — unit smoke (new)
+- `package.json` — added `smoke:browser-context` script
+- `notes/wave-2.md` — mark Task 4 DONE
+
+**Decisions for this task:**
+- Browser context is set at session creation only — no session-level mutation afterward (per the plan, would surprise callers)
+- Per-session overrides (POST /api/sessions body) win over global env defaults — `??` coalesce, not `||`
+- `device` field looks up Playwright's `devices` map (e.g. "iPhone 12", "Pixel 5") and merges viewport/UA/locale/timezone defaults; explicit fields override the device's values via spread order
+- New env vars: `OMNI_VIEWPORT_WIDTH`, `OMNI_VIEWPORT_HEIGHT`, `OMNI_USER_AGENT`, `OMNI_LOCALE`, `OMNI_TIMEZONE`, `OMNI_DEVICE`, `OMNI_COLOR_SCHEME`, `OMNI_GEOLOCATION` (last as "lat,lon" string)
+- `mergeBrowserContextOptions` returns the merged options object so the calling code can use it both for `newContext()` and for the video recording size
+- Zero-deletion: original `createSession` fields still all present in `CreateSessionInput`
+- CDP takeover path also receives the merged options (existing `newContext` call gets the same spread)
+- The smoke is structural (source-level) because the actual browser launch needs a real Chrome install; the existing 21 Wave 1 smokes already cover the createSession path's auth + cap logic
+
+**Validation gate:**
+- `pnpm run typecheck` — TODO this turn
+- `pnpm run build:server` — TODO this turn
+- `pnpm run smoke:browser-context` — TODO this turn

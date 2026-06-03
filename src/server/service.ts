@@ -39,14 +39,22 @@ type SessionListener = (event: SessionEvent) => void;
 
 type CreateSessionInput = {
   agentId?: string;
+  colorScheme?: "dark" | "light" | "no-preference";
   creditBudget?: number | null;
+  device?: string;
+  geolocation?: { latitude: number; longitude: number };
+  locale?: string;
   objective?: string | null;
   operatorSessionId?: number | null;
   orgId?: string | null;
+  permissions?: string[];
   persistent?: boolean;
   policyVersion?: string | null;
   sessionId?: string;
+  timezoneId?: string;
+  userAgent?: string;
   userId?: string | null;
+  viewport?: { width: number; height: number };
 };
 
 type CommandContext = {
@@ -197,6 +205,18 @@ export class OmniStandaloneService {
     // them to the same env var prevents surprise inconsistencies.
     const parallelCap = numberFromEnv("OMNI_MAX_PARALLEL_SESSIONS", 50);
     const sessionManager = new OmniSessionManager({ maxParallelSessions: parallelCap });
+    // Wave 2 Task 4: per-session browser context options. Per-session
+    // overrides win over global env defaults (read in local-server.ts).
+    const contextOptions = {
+      colorScheme: input.colorScheme,
+      device: input.device,
+      geolocation: input.geolocation,
+      locale: input.locale,
+      permissions: input.permissions,
+      timezoneId: input.timezoneId,
+      userAgent: input.userAgent,
+      viewport: input.viewport,
+    };
     const core = new OmniCoreClone({
       proofCapture,
       sessionManager,
@@ -204,7 +224,11 @@ export class OmniStandaloneService {
     });
 
     core.setUserScope(input.userId ?? null);
-    await core.initVault(getBrowserSessionDir(sessionId, input.userId ?? undefined), input.userId ?? undefined);
+    await core.initVault(
+      getBrowserSessionDir(sessionId, input.userId ?? undefined),
+      input.userId ?? undefined,
+      contextOptions,
+    );
     core.startRuntimePersistence({
       agentId,
       checkpointIntervalMs: numberFromEnv("OMNI_CHECKPOINT_MS", 300_000),

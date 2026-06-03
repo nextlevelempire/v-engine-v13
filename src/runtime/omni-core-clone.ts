@@ -14,7 +14,7 @@ import {
   waitForNavigation,
   type OmniTelemetryEmitter,
 } from "./human-rhythm.js";
-import { OmniSessionManager, type OmniSession } from "./omni-session-manager.js";
+import { OmniSessionManager, type BrowserContextOptions, type OmniSession } from "./omni-session-manager.js";
 import { ProofCapture } from "./proof-capture.js";
 import {
   createScratchpadExportBundle as buildScratchpadExportBundle,
@@ -224,7 +224,7 @@ export class OmniCoreClone {
     return this.currentSession!.sessionId;
   }
 
-  async initVault(userDataDir: string, userId?: string | null): Promise<BrowserContext> {
+  async initVault(userDataDir: string, userId?: string | null, contextOptions?: BrowserContextOptions): Promise<BrowserContext> {
     this.headless = false;
     this.activeUserId = userId?.trim() || this.inferUserScopeFromVaultDir(userDataDir);
 
@@ -232,6 +232,7 @@ export class OmniCoreClone {
     // Per-session random authorization secret for nle_takeover (in-memory only, never persisted).
     this.sessionSecret = randomBytes(32).toString("hex");
     this.currentSession = await this.sessionManager.createSession({
+      contextOptions,
       sessionId,
       userDataDir,
       userId: this.activeUserId,

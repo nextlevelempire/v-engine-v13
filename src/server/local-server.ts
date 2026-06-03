@@ -189,14 +189,22 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
         if (method === "POST" && url.pathname === "/api/sessions") {
           const claims = verifyRequestGrant(request, url, daemonInstanceId, "sessions.create");
           const payload = (await readJsonBody(request)) as {
+            colorScheme?: "dark" | "light" | "no-preference";
             creditBudget?: number;
+            device?: string;
+            geolocation?: { latitude: number; longitude: number };
+            locale?: string;
             objective?: string | null;
             operatorSessionId?: number | null;
             orgId?: string | null;
+            permissions?: string[];
             persistent?: boolean;
             policyVersion?: string | null;
             sessionId?: string;
+            timezoneId?: string;
+            userAgent?: string;
             userId?: string | null;
+            viewport?: { height: number; width: number };
           };
           if (payload.orgId && payload.orgId !== claims.orgId) {
             throw new Error("Grant org mismatch.");
@@ -206,14 +214,27 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
           }
           const session = await service.createSession({
             agentId: claims.sub,
+            colorScheme: payload.colorScheme ?? readColorSchemeFromEnv(),
             creditBudget: payload.creditBudget ?? claims.creditBudget ?? 0,
+            device: payload.device ?? readDeviceFromEnv(),
+            geolocation: payload.geolocation ?? readGeolocationFromEnv(),
+            locale: payload.locale ?? readStringFromEnv("OMNI_LOCALE"),
             objective: payload.objective,
             operatorSessionId: payload.operatorSessionId ?? null,
             orgId: claims.orgId,
+            permissions: payload.permissions,
             persistent: payload.persistent === true,
             policyVersion: payload.policyVersion ?? claims.policyVersion,
             sessionId: payload.sessionId ?? claims.sessionId,
+            timezoneId: payload.timezoneId ?? readStringFromEnv("OMNI_TIMEZONE"),
+            userAgent: payload.userAgent ?? readStringFromEnv("OMNI_USER_AGENT"),
             userId: claims.sub,
+            viewport:
+              payload.viewport ??
+              readViewportFromEnv(
+                "OMNI_VIEWPORT_WIDTH",
+                "OMNI_VIEWPORT_HEIGHT",
+              ),
           });
           return writeJson(response, 201, session);
         }
@@ -620,6 +641,45 @@ function readAllowedOriginsFromEnv(env: NodeJS.ProcessEnv = process.env): string
     .map((origin) => origin.trim())
     .filter((origin) => origin.startsWith("http://") || origin.startsWith("https://"))
     .filter((origin) => !origin.includes("*"));
+}
+
+// ── Wave 2 Task 4: per-session browser context env-var readers ─────────────
+// Per-session overrides (POST /api/sessions payload) win over these globals.
+function readStringFromEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
+
+function readColorSchemeFromEnv(): "dark" | "light" | "no-preference" | undefined {
+  const raw = process.env.OMNI_COLOR_SCHEME?.trim().toLowerCase();
+  if (raw === "dark" || raw === "light" || raw === "no-preference") return raw;
+  return undefined;
+}
+
+function readDeviceFromEnv(): string | undefined {
+  return readStringFromEnv("OMNI_DEVICE");
+}
+
+function readGeolocationFromEnv(): { latitude: number; longitude: number } | undefined {
+  const raw = process.env.OMNI_GEOLOCATION?.trim();
+  if (!raw) return undefined;
+  const parts = raw.split(",").map((s) => s.trim());
+  if (parts.length !== 2) return undefined;
+  const lat = Number(parts[0]);
+  const lon = Number(parts[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return undefined;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return undefined;
+  return { latitude: lat, longitude: lon };
+}
+
+function readViewportFromEnv(
+  widthName: string,
+  heightName: string,
+): { height: number; width: number } | undefined {
+  const w = Number(process.env[widthName]);
+  const h = Number(process.env[heightName]);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return undefined;
+  return { height: h, width: w };
 }
 
 async function serveClientAsset(pathname: string, response: ServerResponse): Promise<void> {

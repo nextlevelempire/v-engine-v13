@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { chromium, devices, type Browser, type BrowserContext, type Page } from "playwright";
 import { getBrowserRecordSessionDir, getChromeProfileDir } from "../utils/omni-paths.js";
 import { forceInjectOmniUi, registerOmniUiLayer, setOmniUiPageActive } from "./omni-ui-layer.js";
 import { connectLocalBrowserOverCdp, isLocalBrowserCdpEnabled } from "./connect-local-browser.js";
@@ -25,6 +25,23 @@ export interface OmniSession {
   videoDir: string;
 }
 
+// ── Wave 2 Task 4: per-session BrowserContext options ──────────────────────
+// These options are set at session creation and cannot be changed afterward.
+// Per the plan, no session-level mutation after creation (would surprise callers).
+// The `device` field is a Playwright device name (e.g. "iPhone 12") that pulls
+// viewport + UA + locale + timezone defaults; explicit fields override the
+// device's values.
+export type BrowserContextOptions = {
+  colorScheme?: "dark" | "light" | "no-preference";
+  device?: string;
+  geolocation?: { latitude: number; longitude: number };
+  locale?: string;
+  permissions?: string[];
+  timezoneId?: string;
+  userAgent?: string;
+  viewport?: { height: number; width: number };
+};
+
 export class OmniSessionManager {
   private readonly idleCleanupInterval: NodeJS.Timeout;
   private readonly sessions = new Map<string, OmniSession>();
@@ -46,6 +63,7 @@ export class OmniSessionManager {
   }
 
   async createSession(input: {
+    contextOptions?: BrowserContextOptions;
     persistent?: boolean;
     sessionId: string;
     userDataDir: string;
@@ -142,6 +160,13 @@ export class OmniSessionManager {
     let headless: boolean;
     let launchStrategy: OmniSession["launchStrategy"];
 
+    // Wave 2 Task 4: merge device emulation + per-session browser context
+    // options. The `device` field, if set, pulls a Playwright device profile
+    // (viewport, UA, etc.) and the explicit fields override individual
+    // settings. Per the plan, there is no session-level mutation after
+    // creation — the context is fixed at session.start.
+    const contextOptions = mergeBrowserContextOptions(input.contextOptions);
+
     if (isLocalBrowserCdpEnabled()) {
       const connection = await connectLocalBrowserOverCdp();
       browser = connection.browser;
@@ -152,7 +177,7 @@ export class OmniSessionManager {
         existingContexts[0] ??
         (await browser.newContext({
           acceptDownloads: true,
-          viewport: { height: 800, width: 1280 },
+          ...contextOptions,
         }));
       headless = false;
       launchStrategy = "connect:cdp";
@@ -165,9 +190,10 @@ export class OmniSessionManager {
       browser = launched.browser;
       context = await launched.browser.newContext({
         acceptDownloads: true,
-        recordVideo: { dir: videoDir, size: { width: 1280, height: 800 } },
+        recordVideo: { dir: videoDir, size: { width: contextOptions.viewport?.width ?? 1280, height: contextOptions.viewport?.height ?? 800 } },
         storageState: undefined,
-        viewport: { height: 800, width: 1280 },
+        viewport: contextOptions.viewport ?? { height: 800, width: 1280 },
+        ...contextOptions,
       });
       headless = launched.headless;
       launchStrategy = launched.strategy;
@@ -465,6 +491,24 @@ function sanitizeSegment(value: string): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ── Wave 2 Task 4: merge a device profile with explicit options ───────────
+// Returns the merged BrowserContextOptions suitable for passing to
+// `browser.newContext()`. Explicit fields always win over the device's defaults.
+export function mergeBrowserContextOptions(
+  options: BrowserContextOptions | undefined,
+): BrowserContextOptions {
+  if (!options) return {};
+  const { device, ...explicit } = options;
+  if (!device) return explicit;
+  const profile = (devices as Record<string, Record<string, unknown>>)[device];
+  if (!profile) {
+    // Unknown device name — fall back to the explicit options and let
+    // newContext validate. We don't throw here so callers can probe.
+    return explicit;
+  }
+  return { ...profile, ...explicit } as BrowserContextOptions;
 }
 
 export async function injectUiIntoExistingSession(input: {
