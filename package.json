@@ -40,7 +40,8 @@
     "smoke:high-level-commands": "tsx tests/high-level-commands-smoke.ts",
     "smoke:click-input": "tsx tests/click-input-smoke.ts",
     "smoke:browser-context": "tsx tests/browser-context-smoke.ts",
-    "smoke:ai-helpers": "tsx tests/ai-helpers-smoke.ts"
+    "smoke:ai-helpers": "tsx tests/ai-helpers-smoke.ts",
+    "smoke:captcha": "tsx tests/captcha-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",
