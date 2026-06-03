@@ -2,10 +2,10 @@
 
 **This is the working repo for the v0.3 build of the V-Engine.** It is a copy of the v0.1 source (from `~/Documents/research-v-engine/05-omni-browser-v4/`) and is being incrementally improved through 5 implementation waves.
 
-**Status:** Wave 1 — Foundation, Reliability & Observability — IN PROGRESS
+**Status:** Wave 1 (Foundation, Reliability & Observability) — SHIPPED · Wave 2 (AI Capability, Commander's Vision) — SHIPPED · Wave 3 (Persistence & Multi-Engine) — PLANNED · Wave 4 (Security Hardening) — PLANNED · Wave 5 (Performance & Polish) — PLANNED. See `V-ENGINE.md` for the canonical API reference and `notes/wave-*.md` for wave journals.
 
 **Commander:** Supreme Commander
-**Engineer:** General Max
+**Engineer:** General Max (Wave 1 + 2) → General Majesty (Wave 3+, 2026-06-03)
 **Started:** 2026-06-02
 
 ---
@@ -24,11 +24,11 @@ The V-Engine is a standalone browser-automation runtime. It exposes an HTTP+SSE 
 
 5 waves. See `V13-IMPLEMENTATION-PLAN.md` (also as Google Doc: https://docs.google.com/document/d/1wFPk9ih_nIpS3vZNY0hqXi3JEivjtHY_i784LbXByJ8/edit).
 
-1. **Wave 1 — Foundation, Reliability & Observability (24 findings)** — current
-2. **Wave 2 — AI Capability, Commander's Vision (24 findings)**
-3. **Wave 3 — Persistence & Multi-Engine (7 findings)**
-4. **Wave 4 — Security Hardening (9 findings)**
-5. **Wave 5 — Performance & Polish (10 findings)**
+1. **Wave 1 — Foundation, Reliability & Observability (24 findings)** — SHIPPED 2026-06-02
+2. **Wave 2 — AI Capability, Commander's Vision (24 findings)** — SHIPPED 2026-06-02
+3. **Wave 3 — Persistence & Multi-Engine (7 findings)** — PLANNED
+4. **Wave 4 — Security Hardening (9 findings)** — PLANNED
+5. **Wave 5 — Performance & Polish (10 findings)** — PLANNED
 
 ## Live regression baseline
 
@@ -41,11 +41,14 @@ This v0.3 dev server uses port `4012` (configurable via `PORT` env var).
 ```bash
 pnpm install
 pnpm run typecheck
-pnpm run build
+pnpm run build:server
 pnpm run smoke:local
-pnpm run smoke:security
-pnpm run smoke:env
+pnpm run smoke:healthz
+pnpm run smoke:commands-schema
+pnpm run smoke:session-context
 ```
+
+`pnpm run smoke:*` runs all 31 named smokes (30 source-regex + 1 real runtime: `smoke:listen-host`). All 31 are green as of 2026-06-03; the full list lives in `package.json` under `scripts`.
 
 ## Methodology (per Commander directive 2026-06-02)
 
