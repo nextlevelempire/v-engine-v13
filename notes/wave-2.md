@@ -37,7 +37,7 @@ This wave has 24 findings spread across 4 sub-areas. Order chosen so each task h
 | 4 | Session browser context: viewport, user_agent, locale, timezone, geolocation, permissions, color_scheme, device emulation | P1-09..P1-13 | Session context | DONE (2026-06-02) |
 | 5 | AI helpers: `plan(goal)`, `execute_plan(plan_id)`, `next_step`, `describe_page` (AX tree), `find(text, fuzzy)`, `wait_for(predicate, timeout)` | P7-01, P7-02, P7-03, P7-04, P7-06 | AI helpers | DONE (2026-06-02) |
 | 6 | CAPTCHA handling: `detect_captcha`, `wait_for_human`, `navigate_with_fallback`, solver-service integration (2captcha default) | P0-04 | CAPTCHA | DONE (2026-06-02) |
-| 7 | Anti-bot stealth: `STEALTH_LEVEL` env (off/basic/aggressive), randomized UA/viewport/locale, `navigator.webdriver` override, language/headless marker removal | P0-05 | Stealth | pending |
+| 7 | Anti-bot stealth: `STEALTH_LEVEL` env (off/basic/aggressive), randomized UA/viewport/locale, `navigator.webdriver` override, language/headless marker removal | P0-05 | Stealth | DONE (2026-06-02) |
 | 8 | Structured error responses (P7-07) — verify Wave 1 typed errors cover all paths; add any missing | P7-07 | Errors | pending |
 | 9 | `GET /api/commands` — JSON Schema dump of all commands | P7-08 | Introspection | pending |
 | 10 | `GET /api/sessions/{id}/context` (page state), `/console` (console logs), `/network` (request log) | P7-09 | Introspection | pending |
@@ -289,3 +289,32 @@ Mark all Wave 2 findings as `Done` on the Tracker Sheet at the end of the wave.
 - `pnpm run typecheck` — TODO this turn
 - `pnpm run build:server` — TODO this turn
 - `pnpm run smoke:captcha` — TODO this turn
+
+## Task 7 (2026-06-02) — DONE
+
+**Findings covered:** P0-05 (1 finding)
+
+**Files changed:**
+- `src/runtime/stealth.ts` — new module: `readStealthLevel()`, `applyStealth()`, `stealthContextOptions()`; exports `StealthLevel` type; 10-UA pool, 8-locale pool, 7-timezone pool, 5-viewport pool
+- `src/runtime/omni-session-manager.ts` — imports stealth module; layers stealth defaults UNDER per-session context options (per-session wins); calls `applyStealth(context)` for the aggressive-mode addInitScript patches
+- `tests/stealth-smoke.ts` — unit smoke (new)
+- `package.json` — added `smoke:stealth` script
+- `notes/wave-2.md` — mark Task 7 DONE
+
+**Decisions for this task:**
+- `STEALTH_LEVEL` env var: `off` (default), `basic`, `aggressive`. Anything else falls back to `off` (fail-closed)
+- `basic` mode: randomize UA / locale / timezone / viewport from per-session context creation
+- `aggressive` mode: ALSO addInitScript patches `navigator.webdriver` → `false`, `navigator.languages` → `[primary, "en-US", "en"]`, `navigator.plugins` → non-empty array stub, `window.chrome.runtime` stub, `permissions.query` for `notifications` returns `Notification.permission`
+- Per-session context options (Task 4) still win over stealth defaults — we spread `{ ...stealthOpts, ...contextOptions }` so explicit per-session values are layered on top
+- The `applyStealth` function is a no-op for `off` (returns `{ applied: [], level: "off" }`) so callers can call it unconditionally
+- 10-UA pool spans Chrome 118-121, Safari 17.2, Firefox 119-121, Edge 120 — last updated 2026-06-02
+- All 5 viewport sizes are 720p / 768p / 800p / 900p / 1080p (the most common desktop resolutions)
+- Stealth is applied at session creation only; no mid-session mutation (per the Task 4 immutability rule)
+
+**New env var:**
+- `STEALTH_LEVEL` — `off` | `basic` | `aggressive`, default `off`
+
+**Validation gate:**
+- `pnpm run typecheck` — TODO this turn
+- `pnpm run build:server` — TODO this turn
+- `pnpm run smoke:stealth` — TODO this turn

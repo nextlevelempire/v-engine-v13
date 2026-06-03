@@ -4,6 +4,7 @@ import { chromium, devices, type Browser, type BrowserContext, type Page } from 
 import { getBrowserRecordSessionDir, getChromeProfileDir } from "../utils/omni-paths.js";
 import { forceInjectOmniUi, registerOmniUiLayer, setOmniUiPageActive } from "./omni-ui-layer.js";
 import { connectLocalBrowserOverCdp, isLocalBrowserCdpEnabled } from "./connect-local-browser.js";
+import { applyStealth, readStealthLevel, stealthContextOptions } from "./stealth.js";
 
 export interface OmniSession {
   browser: Browser;
@@ -165,7 +166,19 @@ export class OmniSessionManager {
     // (viewport, UA, etc.) and the explicit fields override individual
     // settings. Per the plan, there is no session-level mutation after
     // creation — the context is fixed at session.start.
-    const contextOptions = mergeBrowserContextOptions(input.contextOptions);
+    let contextOptions = mergeBrowserContextOptions(input.contextOptions);
+    // Wave 2 Task 7: stealth. STEALTH_LEVEL env (off/basic/aggressive) drives
+    // randomized UA / locale / timezone / viewport for "basic", and an
+    // addInitScript patch for "aggressive" (navigator.webdriver = false,
+    // navigator.languages, navigator.plugins, chrome.runtime, notifications
+    // permission). Per-session options still win (we layer them ON TOP).
+    const stealthOpts = stealthContextOptions();
+    if (readStealthLevel() !== "off") {
+      contextOptions = {
+        ...stealthOpts,
+        ...contextOptions,
+      };
+    }
 
     if (isLocalBrowserCdpEnabled()) {
       const connection = await connectLocalBrowserOverCdp();
@@ -200,6 +213,13 @@ export class OmniSessionManager {
     }
 
     await registerOmniUiLayer(context);
+
+    // Wave 2 Task 7: apply the aggressive-mode addInitScript patches to
+    // strip navigator markers. Safe to call when STEALTH_LEVEL=off (it's
+    // a no-op that returns { applied: [], level: "off" }).
+    if (readStealthLevel() === "aggressive") {
+      await applyStealth(context);
+    }
 
     const session: OmniSession = {
       browser,
