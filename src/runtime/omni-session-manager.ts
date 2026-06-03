@@ -5,6 +5,7 @@ import { getBrowserRecordSessionDir, getChromeProfileDir } from "../utils/omni-p
 import { forceInjectOmniUi, registerOmniUiLayer, setOmniUiPageActive } from "./omni-ui-layer.js";
 import { connectLocalBrowserOverCdp, isLocalBrowserCdpEnabled } from "./connect-local-browser.js";
 import { applyStealth, readStealthLevel, stealthContextOptions } from "./stealth.js";
+import { attachTelemetryListeners } from "./session-telemetry.js";
 
 export interface OmniSession {
   browser: Browser;
@@ -130,6 +131,8 @@ export class OmniSessionManager {
         session.currentPage = page;
         session.lastActiveAt = Date.now();
         void this.syncPageActivity(session, page);
+        // Wave 2 Task 10: wire telemetry listeners.
+        attachTelemetryListeners(page, sessionId);
         page.on("domcontentloaded", () => {
           session.currentPage = page;
           session.lastActiveAt = Date.now();
@@ -240,6 +243,9 @@ export class OmniSessionManager {
       session.currentPage = page;
       session.lastActiveAt = Date.now();
       void this.syncPageActivity(session, page);
+      // Wave 2 Task 10: wire telemetry listeners for console + network
+      // capture. Safe to call repeatedly on the same page.
+      attachTelemetryListeners(page, sessionId);
       page.on("domcontentloaded", () => {
         session.currentPage = page;
         session.lastActiveAt = Date.now();

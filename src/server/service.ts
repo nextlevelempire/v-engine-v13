@@ -484,6 +484,35 @@ export class OmniStandaloneService {
     };
   }
 
+  // Wave 2 Task 10: rich context snapshot for GET /api/sessions/{id}/context.
+  // Returns the runtime status + AX tree summary (capped at 2000 chars),
+  // URL, title, and auth/captcha hints. Best-effort: returns what it can
+  // and substitutes null for fields the page can't provide.
+  async getSessionContext(sessionId: string): Promise<Record<string, unknown>> {
+    const record = this.requireSession(sessionId);
+    const runtime = (await record.core.getStatus()) as Record<string, unknown>;
+    let ax: Awaited<ReturnType<typeof captureAXObservation>> | null = null;
+    try {
+      const page = await record.core.ensurePage();
+      ax = await captureAXObservation(page);
+    } catch {
+      ax = null;
+    }
+    return {
+      axSummary: ax?.axTree?.slice(0, 2000) ?? null,
+      axTreeHash: ax?.axTreeHash ?? null,
+      authWallHint: ax?.authWallHint ?? null,
+      capturedAt: ax?.capturedAt ?? null,
+      captchaHint: ax?.captchaHint ?? null,
+      runtime,
+      sessionId,
+      title:
+        ax?.title ?? (typeof runtime.title === "string" ? (runtime.title as string) : null),
+      url:
+        ax?.url ?? (typeof runtime.currentUrl === "string" ? (runtime.currentUrl as string) : null),
+    };
+  }
+
   // P4-04: paginated actionLog access. Newest-first ordering,
   // cursor-based pagination via 'before' (ts string of the last
   // entry the client already has).

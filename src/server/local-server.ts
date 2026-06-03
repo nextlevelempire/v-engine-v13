@@ -19,6 +19,7 @@ import { metrics, renderPrometheus } from "./metrics.js";
 import { parseIncomingContext, type RequestContext } from "./request-context.js";
 import { listFeatureFlags } from "./feature-flags.js";
 import { getCommandsSchema, listCommandNames } from "./commands-schema.js";
+import { getTelemetryStore } from "../runtime/session-telemetry.js";
 
 // When OMNI_DISABLE_CLIENT_ASSETS=1, the fallthrough returns 404 instead of
 // serving static client assets. Used in cloud mode where there is no client.
@@ -357,6 +358,54 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
           const claims = verifyRequestGrant(request, url, daemonInstanceId, "artifacts.read", sessionId);
           const screenshots = service.listScreenshots(sessionId, claims.sub);
           return writeJson(response, 200, { sessionId, screenshots });
+        }
+
+        // Wave 2 Task 10: session context (URL, title, AX tree summary,
+        // cookies, auth/captcha hints). Lighter than `describe_page`
+        // which is a command; this is a read-only introspection endpoint.
+        const contextMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/context$/);
+        if (method === "GET" && contextMatch) {
+          const sessionId = decodeURIComponent(contextMatch[1] || "");
+          verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
+          const context = await service.getSessionContext(sessionId);
+          return writeJson(response, 200, context);
+        }
+
+        // Wave 2 Task 10: session console log. Ring buffer of the last
+        // N console messages (newest-first); N is bounded by
+        // OMNI_TELEMETRY_BUFFER_SIZE (default 1000).
+        const consoleMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/console$/);
+        if (method === "GET" && consoleMatch) {
+          const sessionId = decodeURIComponent(consoleMatch[1] || "");
+          verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
+          const store = getTelemetryStore();
+          const buf = store.get(sessionId);
+          const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit")) || 200, 1000));
+          const entries = (buf?.console ?? []).slice(0, limit);
+          return writeJson(response, 200, {
+            count: entries.length,
+            sessionId,
+            total: buf?.console.length ?? 0,
+            entries,
+          });
+        }
+
+        // Wave 2 Task 10: session network log. Ring buffer of the last N
+        // network events (request, response, request_failed), newest-first.
+        const networkMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/network$/);
+        if (method === "GET" && networkMatch) {
+          const sessionId = decodeURIComponent(networkMatch[1] || "");
+          verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
+          const store = getTelemetryStore();
+          const buf = store.get(sessionId);
+          const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit")) || 200, 1000));
+          const entries = (buf?.network ?? []).slice(0, limit);
+          return writeJson(response, 200, {
+            count: entries.length,
+            sessionId,
+            total: buf?.network.length ?? 0,
+            entries,
+          });
         }
 
         const artifactMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/artifacts\/([^/]+)$/);
