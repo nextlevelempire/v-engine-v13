@@ -42,7 +42,8 @@
     "smoke:browser-context": "tsx tests/browser-context-smoke.ts",
     "smoke:ai-helpers": "tsx tests/ai-helpers-smoke.ts",
     "smoke:captcha": "tsx tests/captcha-smoke.ts",
-    "smoke:stealth": "tsx tests/stealth-smoke.ts"
+    "smoke:stealth": "tsx tests/stealth-smoke.ts",
+    "smoke:typed-errors-2": "tsx tests/typed-errors-2-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",

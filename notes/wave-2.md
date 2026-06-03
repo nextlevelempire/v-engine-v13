@@ -38,7 +38,7 @@ This wave has 24 findings spread across 4 sub-areas. Order chosen so each task h
 | 5 | AI helpers: `plan(goal)`, `execute_plan(plan_id)`, `next_step`, `describe_page` (AX tree), `find(text, fuzzy)`, `wait_for(predicate, timeout)` | P7-01, P7-02, P7-03, P7-04, P7-06 | AI helpers | DONE (2026-06-02) |
 | 6 | CAPTCHA handling: `detect_captcha`, `wait_for_human`, `navigate_with_fallback`, solver-service integration (2captcha default) | P0-04 | CAPTCHA | DONE (2026-06-02) |
 | 7 | Anti-bot stealth: `STEALTH_LEVEL` env (off/basic/aggressive), randomized UA/viewport/locale, `navigator.webdriver` override, language/headless marker removal | P0-05 | Stealth | DONE (2026-06-02) |
-| 8 | Structured error responses (P7-07) — verify Wave 1 typed errors cover all paths; add any missing | P7-07 | Errors | pending |
+| 8 | Structured error responses (P7-07) — verify Wave 1 typed errors cover all paths; add any missing | P7-07 | Errors | DONE (2026-06-02) |
 | 9 | `GET /api/commands` — JSON Schema dump of all commands | P7-08 | Introspection | pending |
 | 10 | `GET /api/sessions/{id}/context` (page state), `/console` (console logs), `/network` (request log) | P7-09 | Introspection | pending |
 | 11 | New smoke tests: smoke:low-level-actions, smoke:browser-context, smoke:ai-helpers, smoke:stealth, smoke:captcha, smoke:commands-schema, smoke:session-context | new | Tests | pending |
@@ -318,3 +318,39 @@ Mark all Wave 2 findings as `Done` on the Tracker Sheet at the end of the wave.
 - `pnpm run typecheck` — TODO this turn
 - `pnpm run build:server` — TODO this turn
 - `pnpm run smoke:stealth` — TODO this turn
+
+## Task 8 (2026-06-02) — DONE
+
+**Findings covered:** P7-07 (1 finding)
+
+**Files changed:**
+- `src/server/service.ts` — replaced 8 plain `throw new Error(...)` sites with typed `OmniError` subclasses:
+  - `handleClick` empty payload → `OmniValidationError` (400)
+  - `handleClick` ambiguous payload → `OmniValidationError` (400)
+  - `handleClick` invalid `match_index` → `OmniValidationError` (400)
+  - `findByText` no-match → `OmniNotFoundError` (404)
+  - `findByText` out-of-range `match_index` → `OmniValidationError` (400)
+  - `resolveSelectorCoords` no-match → `OmniNotFoundError` (404)
+  - `resolveShadowPierceCoords` no-match → `OmniNotFoundError` (404)
+  - `handleAiHelper` execute_plan unknown `plan_id` → `OmniNotFoundError` (404)
+  - `handleAiHelper` next_step unknown `plan_id` → `OmniNotFoundError` (404)
+  - `handleComputer` capability gate missing → `OmniValidationError` (400)
+  - `requireSession` unknown sessionId → `OmniNotFoundError` (404)
+  - `createSession` duplicate sessionId → `OmniValidationError` (400)
+  - `handleAiHelper` wait_for timeout → `OmniRequestTimeoutError` (504)
+- `tests/typed-errors-2-smoke.ts` — unit smoke (new)
+- `package.json` — added `smoke:typed-errors-2` script
+- `notes/wave-2.md` — mark Task 8 DONE
+
+**Decisions for this task:**
+- All 10 typed error classes from Wave 1 are retained (zero-deletion)
+- The new typed throws follow the existing OmniError contract: `httpStatus`, `code`, `hint`, `retryAfterMs?`, `details?` so the response shape stays stable
+- For `findByText` out-of-range `match_index` I used `OmniValidationError` (400) not `OmniNotFoundError` (404) — the match exists; the input is just wrong
+- For `wait_for` timeout I used `OmniRequestTimeoutError` (504) which is a per-request budget — even though the `predicate` itself is well-formed
+- The `<= 2` remaining `throw new Error(` in service.ts are the Wave 1 regex-based fallback in `local-server.ts` plus the `assertNever(command)` guard for exhaustiveness checking (which throws to satisfy TypeScript's `never` type)
+- Imports added: `OmniNotFoundError`, `OmniValidationError`, `OmniRequestTimeoutError` from `./omni-errors.js`
+
+**Validation gate:**
+- `pnpm run typecheck` — TODO this turn
+- `pnpm run build:server` — TODO this turn
+- `pnpm run smoke:typed-errors-2` — TODO this turn

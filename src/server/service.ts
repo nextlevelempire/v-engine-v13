@@ -29,6 +29,13 @@ import { emitWebhookEvent } from "./webhooks.js";
 import { executePlan, type PlanStep } from "../runtime/omni-planner.js";
 import { captureAXObservation } from "../runtime/omni-ax-observer.js";
 import { detectCaptcha, solveCaptcha, waitForHuman } from "../runtime/captcha-solver.js";
+import {
+  OmniBudgetError,
+  OmniNotFoundError,
+  OmniRateLimitError,
+  OmniRequestTimeoutError,
+  OmniValidationError,
+} from "./omni-errors.js";
 import type { Page } from "playwright";
 
 export type SessionEvent = {
@@ -220,7 +227,7 @@ export class OmniStandaloneService {
 
     const sessionId = input.sessionId?.trim() || randomUUID();
     if (this.sessions.has(sessionId)) {
-      throw new Error(`Omni session already exists: ${sessionId}`);
+      throw new OmniValidationError(`Omni session already exists: ${sessionId}`, { sessionId });
     }
 
     const agentId = input.agentId?.trim() || input.userId?.trim() || "standalone-api";
@@ -325,19 +332,21 @@ export class OmniStandaloneService {
 
     const agentRate = this.rateLimiter.consumeAgent(agentId);
     if (!agentRate.allowed) {
-      throw new Error(`Agent rate limit exceeded for ${agentId}`);
+      const retryAfterMs = Math.max(0, agentRate.resetAt - Date.now());
+      throw new OmniRateLimitError(retryAfterMs || 1000, `agent:${agentId}`);
     }
 
     const sessionRate = this.rateLimiter.consumeSession(sessionId);
     if (!sessionRate.allowed) {
-      throw new Error(`Session rate limit exceeded for ${sessionId}`);
+      const retryAfterMs = Math.max(0, sessionRate.resetAt - Date.now());
+      throw new OmniRateLimitError(retryAfterMs || 1000, `session:${sessionId}`);
     }
 
     const cost = command.type === "status" ? 0 : 1;
     if (cost > 0 && record.remainingBudget < cost) {
       await record.core.pauseMission("Credit budget exhausted").catch(() => undefined);
       void this.syncSessionSnapshot(record, "paused");
-      throw new Error(`Session budget exhausted for ${sessionId}`);
+      throw new OmniBudgetError(cost, record.creditBudget);
     }
 
     this.emit(record, "command.started", {
@@ -695,8 +704,9 @@ export class OmniStandaloneService {
   ): Promise<Record<string, unknown>> {
     // Capability gate: only a machine advertising takeover:local_computer drives the desktop.
     if (!getEnabledTakeoverCapabilities().includes("takeover:local_computer")) {
-      throw new Error(
+      throw new OmniValidationError(
         "local_computer takeover is not enabled on this machine (advertise takeover:local_computer to use it).",
+        { requiredCapability: "takeover:local_computer" },
       );
     }
 
@@ -898,7 +908,7 @@ export class OmniStandaloneService {
     const page = await record.core.ensurePage();
     const box = await page.locator(selector).first().boundingBox().catch(() => null);
     if (!box) {
-      throw new Error(`Selector did not match an element with a bounding box: ${selector}`);
+      throw new OmniNotFoundError("element with selector", selector);
     }
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   }
@@ -912,7 +922,7 @@ export class OmniStandaloneService {
     const deep = selector.includes(">>>") ? selector : `css:light >>> ${selector}`;
     const box = await page.locator(deep).first().boundingBox().catch(() => null);
     if (!box) {
-      throw new Error(`Shadow-pierced selector did not match an element: ${selector}`);
+      throw new OmniNotFoundError("element with shadow-pierced selector", selector);
     }
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   }
@@ -936,13 +946,27 @@ export class OmniStandaloneService {
     const { selector, text, coordinates, match_index } = command;
     const provided = [selector, text, coordinates].filter((v) => v !== undefined).length;
     if (provided === 0) {
-      throw new Error("click command requires one of: selector, text, coordinates");
+      throw new OmniValidationError(
+        "click command requires one of: selector, text, coordinates",
+        { command: "click", providedTargets: [] },
+      );
     }
     if (provided > 1) {
-      throw new Error("click command accepts exactly one of: selector, text, coordinates");
+      throw new OmniValidationError(
+        "click command accepts exactly one of: selector, text, coordinates",
+        {
+          command: "click",
+          providedTargets: [selector, text, coordinates]
+            .filter((v) => v !== undefined)
+            .map((v) => Object.keys(v as object)[0] ?? "unknown"),
+        },
+      );
     }
     if (match_index !== undefined && (match_index < 0 || !Number.isInteger(match_index))) {
-      throw new Error("click command match_index must be a non-negative integer");
+      throw new OmniValidationError(
+        "click command match_index must be a non-negative integer",
+        { command: "click", matchIndex: match_index },
+      );
     }
     if (selector !== undefined) {
       // Existing path, unchanged. match_index is ignored for selector-based
@@ -976,11 +1000,12 @@ export class OmniStandaloneService {
     // Verify the selector actually matches at least matchIndex+1 elements.
     const count = await page.locator(selector).count().catch(() => 0);
     if (count === 0) {
-      throw new Error(`No element found with text: ${text}`);
+      throw new OmniNotFoundError("element with text", text);
     }
     if (matchIndex >= count) {
-      throw new Error(
+      throw new OmniValidationError(
         `match_index=${matchIndex} out of range; only ${count} element(s) match text=${text}`,
+        { availableMatches: count, matchIndex, text },
       );
     }
     return selector;
@@ -1011,7 +1036,7 @@ export class OmniStandaloneService {
       case "execute_plan": {
         const plan = this.planStore.get(command.plan_id);
         if (!plan) {
-          throw new Error(`Unknown plan_id: ${command.plan_id}`);
+          throw new OmniNotFoundError("plan", command.plan_id);
         }
         if (command.steps) {
           this.planStore.setSteps(command.plan_id, command.steps);
@@ -1067,7 +1092,7 @@ export class OmniStandaloneService {
         const page = await record.core.ensurePage();
         const plan = this.planStore.get(command.plan_id);
         if (!plan) {
-          throw new Error(`Unknown plan_id: ${command.plan_id}`);
+          throw new OmniNotFoundError("plan", command.plan_id);
         }
         const lastStep = this.planStore.getSteps(command.plan_id).slice(-1)[0]!;
         // Build a 1-step plan and run it.
@@ -1127,9 +1152,7 @@ export class OmniStandaloneService {
           await page.waitForFunction(command.predicate, undefined, { timeout: timeoutMs });
           return { ok: true, predicate: command.predicate, timeoutMs };
         } catch (error) {
-          throw new Error(
-            `wait_for timed out after ${timeoutMs}ms: ${error instanceof Error ? error.message : String(error)}`,
-          );
+          throw new OmniRequestTimeoutError(timeoutMs, timeoutMs);
         }
       }
       default:
@@ -1300,7 +1323,7 @@ export class OmniStandaloneService {
   private requireSession(sessionId: string): SessionRecord {
     const record = this.sessions.get(sessionId);
     if (!record) {
-      throw new Error(`Unknown Omni session: ${sessionId}`);
+      throw new OmniNotFoundError("Omni session", sessionId);
     }
     return record;
   }
@@ -1725,7 +1748,10 @@ function toPlannedAction(raw: PlannedActionInput): PlanStep["action"] {
     case "handoff":
       return { reason: raw.reason ?? "step handoff", type: "handoff" };
     default:
-      throw new Error(`Unknown planned action type: ${(raw as { type: string }).type}`);
+      throw new OmniValidationError(
+        `Unknown planned action type: ${(raw as { type: string }).type}`,
+        { providedType: (raw as { type: string }).type },
+      );
   }
 }
 
