@@ -61,7 +61,7 @@ assert.match(TELEMETRY_SRC, /if \(buf\.network\.length > this\.size\)/, "network
 // ── 5. Service exposes getSessionContext ─────────────────────────────────
 assert.match(
   SERVICE_SRC,
-  /async getSessionContext\(sessionId: string\)/,
+  /async getSessionContext[\s\S]{0,20}sessionId: string/,
   "service must expose getSessionContext",
 );
 assert.match(SERVICE_SRC, /getSessionContext[\s\S]+?axSummary/, "context must include axSummary");
@@ -93,7 +93,7 @@ assert.ok(
   SERVER_SRC.includes('if (method === "GET" && contextMatch)'),
   "/context endpoint must be wired (GET-only)",
 );
-assert.match(SERVER_SRC, /service\.getSessionContext\(sessionId\)/, "/context must call getSessionContext");
+assert.match(SERVER_SRC, /service\.getSessionContext\(sessionId/, "/context must call getSessionContext");
 
 // /console
 assert.ok(

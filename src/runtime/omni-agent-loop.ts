@@ -25,6 +25,7 @@
 
 import type { OmniCoreClone } from "./omni-core-clone.js";
 import { sanitizeProtectedRuntimeText } from "../security/trade-secret-guard.js";
+import { compressConversation, trimAxTree, isApproachingTokenLimit } from "./context-compressor.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -104,7 +105,7 @@ function buildUserPrompt(
     `Page title: ${title}`,
     "",
     "Accessibility tree (what is visible on screen):",
-    axTree.slice(0, 4000),
+    axTree,
     "",
     scratchpadHistory ? `Recent cockpit log:\n${scratchpadHistory}\n` : "",
     "Respond with the next action as strict JSON:",
@@ -263,7 +264,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
         // Capture AX tree via the existing captureAXObservation helper
         const { captureAXObservation } = await import("./omni-ax-observer.js");
         const obs = await captureAXObservation(page).catch(() => null);
-        axTree = obs?.axTree?.slice(0, 4000) ?? "(AX capture failed)";
+        axTree = trimAxTree(obs?.axTree ?? "(AX capture failed)");
         // Stall detection
         if (obs?.axTreeHash && obs.axTreeHash !== lastAxTreeHash) {
           lastAxTreeHash = obs.axTreeHash;
@@ -327,9 +328,11 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
 
     // Add assistant turn to history (keep last 10 turns to manage context)
     conversationHistory.push({ role: "assistant", content: rawResponse });
-    if (conversationHistory.length > 22) {
-      // Keep system prompt + last 20 messages
-      conversationHistory.splice(1, conversationHistory.length - 21);
+    // Compress when approaching context limits — keeps objective context + recent turns
+    if (isApproachingTokenLimit(conversationHistory) || conversationHistory.length > 22) {
+      const compressed = compressConversation(conversationHistory);
+      conversationHistory.length = 0;
+      conversationHistory.push(...compressed);
     }
 
     // ── Parse action ─────────────────────────────────────────────────────────
