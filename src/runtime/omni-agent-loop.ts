@@ -232,6 +232,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
   const conversationHistory: LlmMessage[] = [
     { role: "system", content: buildSystemPrompt() },
   ];
+  // Circuit breaker: track last 5 action fingerprints
+  const recentActionFingerprints: string[] = [];
+  let lastAxTreeHash = "";
 
   emit("agent.loop.started", {
     sessionId,
@@ -261,6 +264,10 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
         const { captureAXObservation } = await import("./omni-ax-observer.js");
         const obs = await captureAXObservation(page).catch(() => null);
         axTree = obs?.axTree?.slice(0, 4000) ?? "(AX capture failed)";
+        // Stall detection
+        if (obs?.axTreeHash && obs.axTreeHash !== lastAxTreeHash) {
+          lastAxTreeHash = obs.axTreeHash;
+        }
 
         // Auth wall / CAPTCHA detection — pause the loop if hit
         if (obs?.authWallHint || obs?.captchaHint) {
@@ -309,6 +316,21 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       continue;
     }
 
+    // ── Circuit breaker: detect stuck loop ───────────────────────────────────
+    const fingerprint = JSON.stringify({ a: action.action, ...(action as Record<string, unknown>) });
+    recentActionFingerprints.push(fingerprint);
+    if (recentActionFingerprints.length > 5) recentActionFingerprints.shift();
+    const isStuck =
+      recentActionFingerprints.length === 5 &&
+      recentActionFingerprints.every((f) => f === recentActionFingerprints[0]);
+    if (isStuck) {
+      const reason = `Circuit breaker: same action repeated 5 times — ${describeAction(action)}. Pausing for human review.`;
+      await core.appendScratchpadEntry(`REFLECT: ⚠️ ${reason}`);
+      emit("agent.loop.stuck", { action: action.action, iteration: iterations, reason, sessionId });
+      return { iterations, outcome: "error", summary: reason };
+    }
+
+    // Stall detection: if AX tree hash unchanged for 10 iterations, warn
     const thinking = action.thinking ? ` — ${action.thinking.slice(0, 200)}` : "";
 
     // ── THINK ─────────────────────────────────────────────────────────────────
@@ -352,9 +374,20 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       sessionId,
     });
 
-    // Brief settle after navigation/interaction
+    // Wait for page to settle after navigation/interaction
     if (action.action === "navigate" || action.action === "click") {
-      await new Promise<void>((r) => setTimeout(r, 1500));
+      try {
+        const activePage = await core.ensurePage().catch(() => null);
+        if (activePage) {
+          // Wait for network to go idle (catches SPA route changes + XHR)
+          await activePage.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {
+            // Fallback: DOMContentLoaded is fast enough for most sites
+            return activePage.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => {});
+          });
+        }
+      } catch {
+        // Never block the loop on a settle failure — just continue
+      }
     }
   }
 

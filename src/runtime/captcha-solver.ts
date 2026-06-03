@@ -125,21 +125,76 @@ export async function solveCaptcha(input: {
     return { reason: "solver_returned_no_token", solved: false };
   }
   try {
-    // 2captcha v0.3 integration: submit the page URL and let the solver do
-    // the work. We do not perform the actual HTTP call in this unit-only
-    // path — the smoke verifies the wire-up. A real call would POST to
-    // https://2captcha.com/in.php and poll /res.php until solved.
     const sitekey = await extractSitekey(input.page, input.type);
     if (!sitekey) {
       return { reason: "solver_returned_no_token", solved: false };
     }
-    // NOTE: we do NOT call 2captcha here in this v0.3 skeleton. The
-    // operator wires the real call in via the production runtime, which
-    // has the real network access. We return a synthetic token so the
-    // caller can proceed through the smoke path.
-    return { provider: "2captcha", solved: true, token: `2captcha:stub:${sitekey.slice(0, 12)}` };
+    const pageUrl = input.page.url();
+    const token = await call2captcha(apiKey, input.type, sitekey, pageUrl);
+    if (!token) {
+      return { reason: "solver_returned_no_token", solved: false };
+    }
+    // Inject the solved token into the page
+    await inject2captchaToken(input.page, input.type, token);
+    return { provider: "2captcha", solved: true, token };
   } catch {
     return { reason: "network_error", solved: false };
+  }
+}
+
+/** Submit captcha to 2captcha and poll until solved. Max wait: 120s. */
+async function call2captcha(
+  apiKey: string,
+  type: CaptchaType,
+  sitekey: string,
+  pageUrl: string,
+): Promise<string | null> {
+  const method = type === "hcaptcha" ? "hcaptcha" : "userrecaptcha";
+  const submitParams = new URLSearchParams({
+    key: apiKey,
+    method,
+    googlekey: sitekey,
+    pageurl: pageUrl,
+    json: "1",
+  });
+  const submitResp = await fetch(`https://2captcha.com/in.php?${submitParams.toString()}`);
+  if (!submitResp.ok) return null;
+  const submitData = (await submitResp.json()) as { status: number; request: string };
+  if (submitData.status !== 1) return null;
+  const captchaId = submitData.request;
+
+  // Poll every 5s, up to 24 times (120s total)
+  for (let attempt = 0; attempt < 24; attempt++) {
+    await new Promise<void>((r) => setTimeout(r, 5000));
+    const resultParams = new URLSearchParams({ key: apiKey, action: "get", id: captchaId, json: "1" });
+    const resultResp = await fetch(`https://2captcha.com/res.php?${resultParams.toString()}`);
+    if (!resultResp.ok) continue;
+    const resultData = (await resultResp.json()) as { status: number; request: string };
+    if (resultData.status === 1) return resultData.request;
+    if (resultData.request !== "CAPCHA_NOT_READY") return null; // hard error
+  }
+  return null;
+}
+
+/** Inject the solved CAPTCHA token into the page DOM and trigger callbacks. */
+async function inject2captchaToken(page: Page, type: CaptchaType, token: string): Promise<void> {
+  if (type === "recaptcha") {
+    await page.evaluate((t) => {
+      const el = document.getElementById("g-recaptcha-response");
+      if (el) (el as HTMLTextAreaElement).value = t;
+      // Trigger reCAPTCHA v2 callback if present
+      if (typeof (window as unknown as Record<string, unknown>).___grecaptcha_cfg !== "undefined") {
+        const cfg = (window as unknown as { ___grecaptcha_cfg: { clients: Record<string, { callback?: (t: string) => void }> } }).___grecaptcha_cfg;
+        for (const client of Object.values(cfg.clients ?? {})) {
+          if (typeof client.callback === "function") client.callback(t);
+        }
+      }
+    }, token);
+  } else if (type === "hcaptcha") {
+    await page.evaluate((t) => {
+      const el = document.querySelector("textarea[name='h-captcha-response']");
+      if (el) (el as HTMLTextAreaElement).value = t;
+    }, token);
   }
 }
 

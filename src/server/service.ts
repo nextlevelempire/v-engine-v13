@@ -503,13 +503,23 @@ export class OmniStandaloneService {
   // Returns the runtime status + AX tree summary (capped at 2000 chars),
   // URL, title, and auth/captcha hints. Best-effort: returns what it can
   // and substitutes null for fields the page can't provide.
-  async getSessionContext(sessionId: string): Promise<Record<string, unknown>> {
+  async getSessionContext(
+    sessionId: string,
+    opts: { includeScreenshot?: boolean } = {},
+  ): Promise<Record<string, unknown>> {
     const record = this.requireSession(sessionId);
     const runtime = (await record.core.getStatus()) as Record<string, unknown>;
     let ax: Awaited<ReturnType<typeof captureAXObservation>> | null = null;
+    let screenshotBase64: string | null = null;
     try {
       const page = await record.core.ensurePage();
       ax = await captureAXObservation(page);
+      // Include a base64 screenshot when OMNI_SCREENSHOT_IN_EVENTS=1 or caller opts in.
+      // Scaled to 75% for bandwidth — still high enough for a vision AI to read.
+      if (opts.includeScreenshot || process.env.OMNI_SCREENSHOT_IN_EVENTS === "1") {
+        const buf = await page.screenshot({ type: "jpeg", quality: 70, scale: "css" }).catch(() => null);
+        if (buf) screenshotBase64 = buf.toString("base64");
+      }
     } catch {
       ax = null;
     }
@@ -521,6 +531,7 @@ export class OmniStandaloneService {
       captchaHint: ax?.captchaHint ?? null,
       runtime,
       sessionId,
+      ...(screenshotBase64 !== null ? { screenshotBase64 } : {}),
       title:
         ax?.title ?? (typeof runtime.title === "string" ? (runtime.title as string) : null),
       url:

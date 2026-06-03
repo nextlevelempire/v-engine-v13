@@ -316,7 +316,10 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
         if (method === "GET" && contextMatch) {
           const sessionId = decodeURIComponent(contextMatch[1] || "");
           verifyRequestGrant(request, url, daemonInstanceId, "sessions.command", sessionId);
-          const context = await service.getSessionContext(sessionId);
+          // ?screenshot=1 asks for a base64 JPEG of the current viewport alongside
+          // the AX tree — lets a connected vision AI see exactly what's on screen.
+          const includeScreenshot = url.searchParams.get("screenshot") === "1";
+          const context = await service.getSessionContext(sessionId, { includeScreenshot });
           return writeJson(response, 200, context);
         }
 

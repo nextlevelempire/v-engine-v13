@@ -44,6 +44,7 @@ import { OmniPayloadCrypto } from "./payload-crypto.js";
 import { forceInjectOmniUi } from "./omni-ui-layer.js";
 import type { Browser, BrowserContext, Page, Response as PlaywrightResponse } from "playwright";
 import { sanitizeProtectedRuntimeText, sanitizeProtectedRuntimeValue } from "../security/trade-secret-guard.js";
+import { redactPii } from "../security/pii-scanner.js";
 import { captureAXObservation } from "./omni-ax-observer.js";
 import { capturePreActionContext, verifyAction } from "./omni-verifier.js";
 import { loadVaultEntry, saveVaultEntry } from "../utils/local-vault.js";
@@ -354,7 +355,7 @@ export class OmniCoreClone {
   }
 
   async appendScratchpadEntry(text: string, type: "ai" | "human" = "ai"): Promise<void> {
-    const safeText = sanitizeProtectedRuntimeText(text);
+    const safeText = redactPii(sanitizeProtectedRuntimeText(text));
     if (this.currentPage && !this.currentPage.isClosed()) {
       await this.writeScratchpad(this.currentPage, safeText, type);
       return;
