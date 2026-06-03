@@ -16,6 +16,9 @@ import {
 } from "../utils/omni-paths.js";
 import { prepareDirectiveForModel, validateAssistantReply } from "./model-guard.js";
 import { isAgentLoopEnabled, runAgentLoop } from "../runtime/omni-agent-loop.js";
+import { vaultFill, storeCredential, listCredentials, isVaultConfigured } from "../runtime/credential-vault.js";
+import { fillTotp, generateTotp } from "../runtime/totp-generator.js";
+import { navigateEmail } from "../runtime/email-navigator.js";
 import {
   syncArtifactRecord,
   syncGuardrailIncident,
@@ -133,7 +136,13 @@ export type SessionCommand =
   // ── Wave 2 Task 6: CAPTCHA handling ──
   | { type: "detect_captcha" }
   | { type: "wait_for_human"; reason?: string; timeout_ms?: number }
-  | { type: "navigate_with_fallback"; url: string; fallback_url: string };
+  | { type: "navigate_with_fallback"; url: string; fallback_url: string }
+  // ── Tier 2: Credential vault commands ──
+  | { type: "vault_fill"; hostname: string }
+  | { type: "vault_fill_totp"; hostname: string }
+  | { type: "vault_store"; hostname: string; username: string; password: string; totpSecret?: string; notes?: string }
+  | { type: "vault_list" }
+  | { type: "email"; action: "compose" | "reply" | "read_inbox"; to?: string; subject?: string; body?: string; thread_url?: string };
 
 /** Wave 2 Task 5: shape of a step the AI can submit in execute_plan / next_step. */
 export type PlannedStepInput = {
@@ -442,6 +451,53 @@ export class OmniStandaloneService {
       case "close":
         result = await this.closeSessionInternal(record, command.reason);
         break;
+      // ── Tier 2: Credential vault ──────────────────────────────────────────
+      case "vault_fill": {
+        const page = await record.core.ensurePage();
+        result = await vaultFill(page, command.hostname);
+        break;
+      }
+      case "vault_fill_totp": {
+        const page = await record.core.ensurePage();
+        const cred = (await import("../runtime/credential-vault.js")).getCredential(command.hostname);
+        if (!cred?.totpSecret) {
+          result = { ok: false, reason: "no_totp_secret_for_hostname" };
+        } else {
+          result = await fillTotp(page, cred.totpSecret);
+        }
+        break;
+      }
+      case "vault_store": {
+        const stored = storeCredential({
+          hostname: command.hostname,
+          username: command.username,
+          password: command.password,
+          totpSecret: command.totpSecret,
+          notes: command.notes,
+        });
+        result = { ok: stored, hostname: command.hostname };
+        break;
+      }
+      case "vault_list": {
+        if (!isVaultConfigured()) {
+          result = { ok: false, reason: "vault_not_configured", hint: "Set OMNI_VAULT_KEY (min 32 chars)" };
+        } else {
+          result = { ok: true, credentials: listCredentials() };
+        }
+        break;
+      }
+      // ── Tier 2: Email webmail navigator ──────────────────────────────────
+      case "email": {
+        const page = await record.core.ensurePage();
+        const emailInput =
+          command.action === "compose"
+            ? { action: "compose" as const, to: command.to ?? "", subject: command.subject ?? "", body: command.body ?? "" }
+            : command.action === "reply"
+            ? { action: "reply" as const, thread_url: command.thread_url ?? "", body: command.body ?? "" }
+            : { action: "read_inbox" as const };
+        result = await navigateEmail(page, emailInput);
+        break;
+      }
       default:
         throw new OmniValidationError(
           `unknown command type: ${(command as { type: string }).type}`,
@@ -1958,6 +2014,16 @@ function describeCommandForActionLog(command: SessionCommand): string {
       return `navigate_with_fallback ${command.url.slice(0, 40)} → ${command.fallback_url.slice(0, 40)}`;
     case "close":
       return `close (${command.reason?.slice(0, 40) ?? "no reason"})`;
+    case "vault_fill":
+      return `vault_fill ${command.hostname}`;
+    case "vault_fill_totp":
+      return `vault_fill_totp ${command.hostname}`;
+    case "vault_store":
+      return `vault_store ${command.hostname} (username: ${command.username})`;
+    case "vault_list":
+      return "vault_list";
+    case "email":
+      return `email.${command.action}${command.to ? ` → ${command.to}` : ""}`;
     default:
       return assertNever(command);
   }

@@ -269,8 +269,33 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
           lastAxTreeHash = obs.axTreeHash;
         }
 
-        // Auth wall / CAPTCHA detection — pause the loop if hit
+        // Auth wall / CAPTCHA detection — pause or auto-consent
         if (obs?.authWallHint || obs?.captchaHint) {
+          // OAuth consent auto-click: OMNI_AUTO_CONSENT=1 + "Allow"/"Authorize" visible
+          if (!obs.captchaHint && process.env.OMNI_AUTO_CONSENT === "1" && page) {
+            const consentSelectors = [
+              'button:has-text("Allow")',
+              'button:has-text("Authorize")',
+              'button:has-text("Accept")',
+              'button:has-text("Continue")',
+              '[data-action="allow"]',
+              'input[value="Allow"]',
+              '[id*="submit_approve_access"]',
+            ];
+            let clicked = false;
+            for (const sel of consentSelectors) {
+              const count = await page.locator(sel).count().catch(() => 0);
+              if (count > 0) {
+                await page.locator(sel).first().click({ timeout: 5000 }).catch(() => {});
+                await core.appendScratchpadEntry(`EXECUTE: OAuth consent auto-clicked "${sel}".`);
+                emit("agent.loop.consent_auto_clicked", { iteration: iterations, selector: sel, sessionId });
+                recentActionFingerprints.length = 0; // reset circuit breaker
+                clicked = true;
+                break;
+              }
+            }
+            if (clicked) continue; // resume loop after consent
+          }
           const reason = obs.captchaHint
             ? "CAPTCHA detected — autonomous loop paused for human verification."
             : "Auth wall detected — autonomous loop paused for human login.";
