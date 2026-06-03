@@ -15,6 +15,7 @@ import {
   getSessionStateRootDir,
 } from "../utils/omni-paths.js";
 import { prepareDirectiveForModel, validateAssistantReply } from "./model-guard.js";
+import { isAgentLoopEnabled, runAgentLoop } from "../runtime/omni-agent-loop.js";
 import {
   syncArtifactRecord,
   syncGuardrailIncident,
@@ -26,6 +27,7 @@ import { sanitizeProtectedRuntimeValue } from "../security/trade-secret-guard.js
 import { LocalComputerController, type ComputerAction } from "../runtime/local-computer.js";
 import { getEnabledTakeoverCapabilities } from "./takeover-config.js";
 import { emitWebhookEvent } from "./webhooks.js";
+import { listCommandNames } from "./commands-schema.js";
 import { executePlan, type PlanStep } from "../runtime/omni-planner.js";
 import { captureAXObservation } from "../runtime/omni-ax-observer.js";
 import { detectCaptcha, solveCaptcha, waitForHuman } from "../runtime/captcha-solver.js";
@@ -105,6 +107,7 @@ export type SessionCommand =
   | { type: "screenshot"; label?: string }
   | { type: "status" }
   | { type: "type"; selector: string; text: string }
+  | { type: "close"; reason?: string }
   // ── Wave 2: high-level wrappers over the new low-level ComputerAction variants ──
   | { type: "right_click"; selector: string }
   | { type: "double_click"; selector: string }
@@ -368,6 +371,12 @@ export class OmniStandaloneService {
         result = await this.handleClick(record, command);
         break;
       case "type":
+        if (typeof command.selector !== "string" || command.selector.length === 0) {
+          throw new OmniValidationError(`type: selector is required (string, non-empty)`, { received: command });
+        }
+        if (typeof command.text !== "string") {
+          throw new OmniValidationError(`type: text is required (string)`, { received: command });
+        }
         result = await record.core.type(command.selector, command.text);
         break;
       case "screenshot":
@@ -430,8 +439,14 @@ export class OmniStandaloneService {
       case "navigate_with_fallback":
         result = await this.handleCaptcha(record, command);
         break;
+      case "close":
+        result = await this.closeSessionInternal(record, command.reason);
+        break;
       default:
-        result = assertNever(command);
+        throw new OmniValidationError(
+          `unknown command type: ${(command as { type: string }).type}`,
+          { knownCommands: listCommandNames() },
+        );
     }
 
     record.commandCount += 1;
@@ -666,6 +681,16 @@ export class OmniStandaloneService {
     emitWebhookEvent("session.closed", sessionId, record.orgId, record.userId, { sessionId });
   }
 
+  /** Internal: invoked from the `close` SessionCommand. */
+  private async closeSessionInternal(
+    record: SessionRecord,
+    reason?: string,
+  ): Promise<Record<string, unknown>> {
+    const sessionId = record.sessionId;
+    await this.closeSession(sessionId);
+    return { ok: true, sessionId, closed: true, reason: reason ?? null };
+  }
+
   async shutdown(): Promise<void> {
     clearInterval(this.cleanupTimer);
     for (const sessionId of Array.from(this.sessions.keys())) {
@@ -720,8 +745,25 @@ export class OmniStandaloneService {
       queueForAgent: true,
     });
 
+    // When OMNI_LLM_PROVIDER is set, spawn the autonomous agent loop.
+    // Fire-and-forget: the directive command returns immediately; the loop
+    // runs in the background and narrates via SSE + cockpit scratchpad.
+    if (isAgentLoopEnabled()) {
+      const loopObjective = guarded.message;
+      void runAgentLoop({
+        core: record.core,
+        emit: (event, payload) => this.emit(record, event, payload),
+        objective: loopObjective,
+        sessionId: record.sessionId,
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        void record.core.appendScratchpadEntry(`REFLECT: Agent loop crashed — ${msg}`);
+      });
+    }
+
     return {
       accepted: true,
+      agentLoopActive: isAgentLoopEnabled(),
       modelTurn: guarded.modelTurn,
       queuedDirective: guarded.message,
     };
@@ -923,7 +965,10 @@ export class OmniStandaloneService {
         break;
       }
       default:
-        return assertNever(command);
+        throw new OmniValidationError(
+          `unknown high-level command type: ${(command as { type: string }).type}`,
+          { knownCommands: listCommandNames() },
+        );
     }
 
     return this.handleComputer(record, { action, type: "computer" });
@@ -1185,7 +1230,10 @@ export class OmniStandaloneService {
         }
       }
       default:
-        return assertNever(command);
+        throw new OmniValidationError(
+          `unknown AI helper command type: ${(command as { type: string }).type}`,
+          { knownCommands: listCommandNames() },
+        );
     }
   }
 
@@ -1273,7 +1321,10 @@ export class OmniStandaloneService {
         };
       }
       default:
-        return assertNever(command);
+        throw new OmniValidationError(
+          `unknown CAPTCHA command type: ${(command as { type: string }).type}`,
+          { knownCommands: listCommandNames() },
+        );
     }
   }
 
@@ -1894,6 +1945,8 @@ function describeCommandForActionLog(command: SessionCommand): string {
       return `wait_for_human (${command.timeout_ms ?? 300_000}ms) "${(command.reason ?? "").slice(0, 40)}"`;
     case "navigate_with_fallback":
       return `navigate_with_fallback ${command.url.slice(0, 40)} → ${command.fallback_url.slice(0, 40)}`;
+    case "close":
+      return `close (${command.reason?.slice(0, 40) ?? "no reason"})`;
     default:
       return assertNever(command);
   }
