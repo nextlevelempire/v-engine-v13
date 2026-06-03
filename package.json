@@ -36,7 +36,8 @@
     "smoke:tenant-scoping": "tsx tests/tenant-scoping-smoke.ts",
     "smoke:deploy": "tsx tests/deploy-smoke.ts",
     "smoke:feature-flags": "tsx tests/feature-flags-smoke.ts",
-    "smoke:low-level-actions": "tsx tests/low-level-actions-smoke.ts"
+    "smoke:low-level-actions": "tsx tests/low-level-actions-smoke.ts",
+    "smoke:high-level-commands": "tsx tests/high-level-commands-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",

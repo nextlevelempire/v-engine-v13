@@ -32,7 +32,7 @@ This wave has 24 findings spread across 4 sub-areas. Order chosen so each task h
 | # | Task | Findings | Sub-area | Status |
 |---|---|---|---|---|
 | 1 | Extend `ComputerAction` type + `local-computer.ts` with new low-level actions (right_click, double_click, shortcut, drag, scroll, hover, clipboard, file_upload, file_download, screenshot_element, fill_form, scroll_until, enter_frame, exit_frame, shadow DOM) | P1-01, P1-02, P1-03, P1-04, P1-05, P1-07, P1-08, P1-11 | Low-level actions | DONE (2026-06-02) |
-| 2 | Wrap new low-level actions as high-level commands in `service.ts` | P1-01..P1-08 | High-level commands | pending |
+| 2 | Wrap new low-level actions as high-level commands in `service.ts` | P1-01..P1-08 | High-level commands | DONE (2026-06-02) |
 | 3 | Extend `ClickInput` to accept `text`, `coordinates`, `match_index` overloads | P1-01, P7-05 | Input shapes | pending |
 | 4 | Session browser context: viewport, user_agent, locale, timezone, geolocation, permissions, color_scheme, device emulation | P1-09..P1-13 | Session context | pending |
 | 5 | AI helpers: `plan(goal)`, `execute_plan(plan_id)`, `next_step`, `describe_page` (AX tree), `find(text, fuzzy)`, `wait_for(predicate, timeout)` | P7-01, P7-02, P7-03, P7-04, P7-06 | AI helpers | pending |
@@ -158,3 +158,27 @@ Mark all Wave 2 findings as `Done` on the Tracker Sheet at the end of the wave.
 - `pnpm run typecheck` — TODO this turn
 - `pnpm run build:server` — TODO this turn
 - `pnpm run smoke:low-level-actions` — TODO this turn
+
+## Task 2 (2026-06-02) — DONE
+
+**Findings covered:** P1-01..P1-08 (8 findings)
+
+**Files changed:**
+- `src/server/service.ts` — added 14 new `SessionCommand` variants, exported `NewHighLevelCommand` type, added `handleNewHighLevel()` + `resolveSelectorCoords()` + `resolveShadowPierceCoords()` private helpers, updated `describeCommandForActionLog()` for all 14 new commands, updated `handleComputer()` to attach the session's page to the `LocalComputerController`
+- `tests/high-level-commands-smoke.ts` — unit smoke (new)
+- `package.json` — added `smoke:high-level-commands` script
+- `notes/wave-2.md` — mark Task 2 DONE
+
+**Decisions for this task:**
+- All 14 new high-level commands route through `handleComputer` so the safety rails (capability gate, credential gate, irreversible confirmation, page-required check), action log, webhook event, and cockpit event all apply uniformly — no parallel execution path
+- Selector-based commands (hover, right_click, double_click, drag, scroll) resolve selector → (x, y) via `page.locator(selector).boundingBox()` and build the matching low-level `ComputerAction` (no behavior change from the existing `click` path; the difference is the action type)
+- Page-DOM commands (file_upload, file_download, screenshot_element, fill_form, scroll_until, enter_frame, exit_frame) build a low-level `ComputerAction` with the selector/text passed through
+- `shadow_click` resolves the pierced element's coordinates and dispatches a regular `click` (NOT a `shadow_pierce` action — the pierce is just the resolution step)
+- `NewHighLevelCommand` is exported as a type so the JSON Schema endpoint (Task 9) can reference it
+- Zero-deletion rule: all 10 original commands still in the union; their dispatch in `executeCommand` is unchanged; their entries in `describeCommandForActionLog` are unchanged
+- `handleComputer()` now calls `record.core.ensurePage()` and `setPage(page)` on the `LocalComputerController` so the page-DOM ComputerAction path from Task 1 actually has a page to work on
+
+**Validation gate:**
+- `pnpm run typecheck` — TODO this turn
+- `pnpm run build:server` — TODO this turn
+- `pnpm run smoke:high-level-commands` — TODO this turn

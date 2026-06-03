@@ -76,7 +76,41 @@ export type SessionCommand =
   | { type: "resume"; reason?: string }
   | { type: "screenshot"; label?: string }
   | { type: "status" }
-  | { type: "type"; selector: string; text: string };
+  | { type: "type"; selector: string; text: string }
+  // ── Wave 2: high-level wrappers over the new low-level ComputerAction variants ──
+  | { type: "right_click"; selector: string }
+  | { type: "double_click"; selector: string }
+  | { type: "hover"; selector: string }
+  | { type: "shortcut"; keys: string[] }
+  | { type: "drag"; fromSelector: string; toSelector: string }
+  | { type: "scroll"; selector: string; targetY: number }
+  | { type: "file_upload"; selector: string; filePath: string }
+  | { type: "file_download"; url: string; savePath: string }
+  | { type: "screenshot_element"; selector: string; label?: string }
+  | { type: "fill_form"; fields: Array<{ selector: string; value: string }> }
+  | { type: "scroll_until"; target: string; direction?: "down" | "up"; maxScrolls?: number }
+  | { type: "enter_frame"; frameSelector: string }
+  | { type: "exit_frame" }
+  | { type: "shadow_click"; selector: string };
+
+/** Wave 2: the subset of SessionCommand that handleNewHighLevel routes. */
+export type NewHighLevelCommand = Extract<
+  SessionCommand,
+  | { type: "right_click" }
+  | { type: "double_click" }
+  | { type: "hover" }
+  | { type: "shortcut" }
+  | { type: "drag" }
+  | { type: "scroll" }
+  | { type: "file_upload" }
+  | { type: "file_download" }
+  | { type: "screenshot_element" }
+  | { type: "fill_form" }
+  | { type: "scroll_until" }
+  | { type: "enter_frame" }
+  | { type: "exit_frame" }
+  | { type: "shadow_click" }
+>;
 
 type SessionRecord = {
   actionLog: Array<{
@@ -283,6 +317,25 @@ export class OmniStandaloneService {
         break;
       case "assistant_reply":
         result = await this.handleAssistantReply(record, command.message, context);
+        break;
+      // Wave 2: high-level wrappers. Each resolves selectors to coordinates (or
+      // builds a low-level ComputerAction) and re-enters via handleComputer so
+      // the safety rails + webhooks + action log path apply uniformly.
+      case "right_click":
+      case "double_click":
+      case "hover":
+      case "drag":
+      case "scroll":
+      case "shortcut":
+      case "file_upload":
+      case "file_download":
+      case "screenshot_element":
+      case "fill_form":
+      case "scroll_until":
+      case "enter_frame":
+      case "exit_frame":
+      case "shadow_click":
+        result = await this.handleNewHighLevel(record, command);
         break;
       default:
         result = assertNever(command);
@@ -566,6 +619,19 @@ export class OmniStandaloneService {
     if (!record.computer) {
       record.computer = new LocalComputerController();
     }
+    // Attach the session's current page so page-DOM ComputerActions
+    // (screenshot_element, file_upload, fill_form, scroll_until, enter_frame,
+    // shadow_pierce) have a Page to operate on. Safe to call repeatedly;
+    // setPage() clears the frame state on every call.
+    try {
+      const page = await record.core.ensurePage();
+      if (page) {
+        record.computer.setPage(page);
+      }
+    } catch {
+      // No page yet (e.g. session created but no navigate yet). The desktop
+      // actions still work; page-DOM actions will return blockedReason.
+    }
     // The human approved the pending irreversible/financial action for this step.
     if (command.confirm === true) {
       record.computer.grantConfirmation();
@@ -634,6 +700,137 @@ export class OmniStandaloneService {
     }
 
     return guarded;
+  }
+
+  // ── Wave 2: high-level command dispatcher ─────────────────────────────────
+  // Each new high-level command builds a low-level ComputerAction and re-enters
+  // through handleComputer so the safety rails (credential gate, irreversible
+  // confirmation, capability check, page-required check), the action log, the
+  // webhook event, and the cockpit event all flow through the same code path.
+  // Selector-based commands resolve selector → (x, y) via the core's page
+  // before building the low-level action.
+  private async handleNewHighLevel(
+    record: SessionRecord,
+    command: NewHighLevelCommand,
+  ): Promise<Record<string, unknown>> {
+    let action: ComputerAction;
+    switch (command.type) {
+      case "right_click": {
+        const coords = await this.resolveSelectorCoords(record, command.selector);
+        action = { type: "right_click", x: coords.x, y: coords.y };
+        break;
+      }
+      case "double_click": {
+        const coords = await this.resolveSelectorCoords(record, command.selector);
+        action = { type: "double_click", x: coords.x, y: coords.y };
+        break;
+      }
+      case "hover": {
+        const coords = await this.resolveSelectorCoords(record, command.selector);
+        action = { type: "hover", x: coords.x, y: coords.y };
+        break;
+      }
+      case "shortcut":
+        action = { type: "shortcut", keys: command.keys };
+        break;
+      case "drag": {
+        const fromCoords = await this.resolveSelectorCoords(record, command.fromSelector);
+        const toCoords = await this.resolveSelectorCoords(record, command.toSelector);
+        action = {
+          fromX: fromCoords.x,
+          fromY: fromCoords.y,
+          toX: toCoords.x,
+          toY: toCoords.y,
+          type: "drag",
+        };
+        break;
+      }
+      case "scroll": {
+        const coords = await this.resolveSelectorCoords(record, command.selector);
+        // Compute deltaY from the current scroll position of the page; if the
+        // page can't be reached, fall back to deltaY=0 and let the low-level
+        // executor log a blocked outcome.
+        let deltaY = 0;
+        try {
+          const page = await record.core.ensurePage();
+          const currentY = await page.evaluate(() => window.scrollY).catch(() => 0);
+          deltaY = command.targetY - (typeof currentY === "number" ? currentY : 0);
+        } catch {
+          deltaY = 0;
+        }
+        action = { deltaX: 0, deltaY, type: "scroll", x: coords.x, y: coords.y };
+        break;
+      }
+      case "file_upload":
+        action = { filePath: command.filePath, selector: command.selector, type: "file_upload" };
+        break;
+      case "file_download":
+        action = { savePath: command.savePath, type: "file_download", url: command.url };
+        break;
+      case "screenshot_element":
+        action = {
+          label: command.label,
+          selector: command.selector,
+          type: "screenshot_element",
+        };
+        break;
+      case "fill_form":
+        action = { fields: command.fields, type: "fill_form" };
+        break;
+      case "scroll_until":
+        action = {
+          direction: command.direction,
+          maxScrolls: command.maxScrolls,
+          target: command.target,
+          type: "scroll_until",
+        };
+        break;
+      case "enter_frame":
+        action = { frameSelector: command.frameSelector, type: "enter_frame" };
+        break;
+      case "exit_frame":
+        action = { type: "exit_frame" };
+        break;
+      case "shadow_click": {
+        // The high-level shadow_click resolves the pierced element's coords
+        // first, then dispatches a regular click. If resolution fails, it
+        // falls back to the page-DOM shadow_pierce for the count check.
+        const coords = await this.resolveShadowPierceCoords(record, command.selector);
+        action = { type: "click", x: coords.x, y: coords.y };
+        break;
+      }
+      default:
+        return assertNever(command);
+    }
+
+    return this.handleComputer(record, { action, type: "computer" });
+  }
+
+  /** Resolve a CSS selector to its center coordinates via the core's page. */
+  private async resolveSelectorCoords(
+    record: SessionRecord,
+    selector: string,
+  ): Promise<{ x: number; y: number }> {
+    const page = await record.core.ensurePage();
+    const box = await page.locator(selector).first().boundingBox().catch(() => null);
+    if (!box) {
+      throw new Error(`Selector did not match an element with a bounding box: ${selector}`);
+    }
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  }
+
+  /** Resolve a shadow-pierced selector to its center coordinates. */
+  private async resolveShadowPierceCoords(
+    record: SessionRecord,
+    selector: string,
+  ): Promise<{ x: number; y: number }> {
+    const page = await record.core.ensurePage();
+    const deep = selector.includes(">>>") ? selector : `css:light >>> ${selector}`;
+    const box = await page.locator(deep).first().boundingBox().catch(() => null);
+    if (!box) {
+      throw new Error(`Shadow-pierced selector did not match an element: ${selector}`);
+    }
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   }
 
   private emit(record: SessionRecord, type: string, data: Record<string, unknown>): void {
@@ -1035,6 +1232,35 @@ function describeCommandForActionLog(command: SessionCommand): string {
       return "status";
     case "computer":
       return `computer ${command.action}${command.confirm ? " (confirm)" : ""}`;
+    // Wave 2 high-level wrappers — descriptive one-liners for the action log.
+    case "right_click":
+      return `right_click ${command.selector.slice(0, 60)}`;
+    case "double_click":
+      return `double_click ${command.selector.slice(0, 60)}`;
+    case "hover":
+      return `hover ${command.selector.slice(0, 60)}`;
+    case "shortcut":
+      return `shortcut ${command.keys.join("+")}`;
+    case "drag":
+      return `drag ${command.fromSelector.slice(0, 40)} → ${command.toSelector.slice(0, 40)}`;
+    case "scroll":
+      return `scroll ${command.selector.slice(0, 40)} → ${command.targetY}`;
+    case "file_upload":
+      return `file_upload ${command.selector.slice(0, 40)} ← ${command.filePath}`;
+    case "file_download":
+      return `file_download ${command.url.slice(0, 60)} → ${command.savePath}`;
+    case "screenshot_element":
+      return `screenshot_element ${command.selector.slice(0, 40)}${command.label ? ` (${command.label.slice(0, 30)})` : ""}`;
+    case "fill_form":
+      return `fill_form (${command.fields.length} field${command.fields.length === 1 ? "" : "s"})`;
+    case "scroll_until":
+      return `scroll_until ${command.target.slice(0, 40)} ${command.direction ?? "down"}`;
+    case "enter_frame":
+      return `enter_frame ${command.frameSelector.slice(0, 60)}`;
+    case "exit_frame":
+      return "exit_frame";
+    case "shadow_click":
+      return `shadow_click ${command.selector.slice(0, 60)}`;
     default:
       return assertNever(command);
   }
