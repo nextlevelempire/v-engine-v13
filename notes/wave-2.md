@@ -39,7 +39,7 @@ This wave has 24 findings spread across 4 sub-areas. Order chosen so each task h
 | 6 | CAPTCHA handling: `detect_captcha`, `wait_for_human`, `navigate_with_fallback`, solver-service integration (2captcha default) | P0-04 | CAPTCHA | DONE (2026-06-02) |
 | 7 | Anti-bot stealth: `STEALTH_LEVEL` env (off/basic/aggressive), randomized UA/viewport/locale, `navigator.webdriver` override, language/headless marker removal | P0-05 | Stealth | DONE (2026-06-02) |
 | 8 | Structured error responses (P7-07) — verify Wave 1 typed errors cover all paths; add any missing | P7-07 | Errors | DONE (2026-06-02) |
-| 9 | `GET /api/commands` — JSON Schema dump of all commands | P7-08 | Introspection | pending |
+| 9 | `GET /api/commands` — JSON Schema dump of all commands | P7-08 | Introspection | DONE (2026-06-02) |
 | 10 | `GET /api/sessions/{id}/context` (page state), `/console` (console logs), `/network` (request log) | P7-09 | Introspection | pending |
 | 11 | New smoke tests: smoke:low-level-actions, smoke:browser-context, smoke:ai-helpers, smoke:stealth, smoke:captcha, smoke:commands-schema, smoke:session-context | new | Tests | pending |
 | 12 | V-ENGINE.md: document new commands, new env vars, new endpoints | new | Docs | pending |
@@ -354,3 +354,32 @@ Mark all Wave 2 findings as `Done` on the Tracker Sheet at the end of the wave.
 - `pnpm run typecheck` — TODO this turn
 - `pnpm run build:server` — TODO this turn
 - `pnpm run smoke:typed-errors-2` — TODO this turn
+
+## Task 9 (2026-06-02) — DONE
+
+**Findings covered:** P7-08 (1 finding)
+
+**Files changed:**
+- `src/server/commands-schema.ts` (new) — `getCommandsSchema()`, `listCommandNames()`, `getCommandDefinition()`; `JsonSchema` type; 33 `CommandDefinition` entries (10 original + 14 high-level + 6 AI helpers + 3 CAPTCHA); cached schema built from the definitions at module load
+- `src/server/local-server.ts` — added `GET /api/commands` endpoint that returns `{ count, commandNames, schema }`; uses GET-or-HEAD; no auth (read-only introspection)
+- `tests/commands-schema-smoke.ts` (new)
+- `package.json` — added `smoke:commands-schema` script
+- `notes/wave-2.md` — mark Task 9 DONE
+
+**Decisions for this task:**
+- JSON Schema draft-07 (oneOf pattern) for each command branch; the schema is cached at module load so no per-request rebuild
+- The schema is built from a single source of truth (`COMMAND_DEFINITIONS`); when a new command is added, the schema is regenerated automatically
+- `additionalProperties: false` on every branch — strict validation; unknown fields cause schema rejection
+- `confirm: false` is the default; the `computer` command's `confirm` field is a boolean (omittable) not required
+- The `click` schema's 4 input shapes (`selector`, `text`, `coordinates`, `match_index`) are all optional with no `required` markers; clients must use the API doc / smarts to know exactly one of selector/text/coordinates is required (this is enforced at runtime by `handleClick` with typed errors)
+- The endpoint is GET-or-HEAD only; no POST/PUT/DELETE; this is a read-only introspection surface
+- `listCommandNames()` returns the flat array of 33 names so clients can iterate without parsing the schema
+- The schema includes `$schema: "http://json-schema.org/draft-07/schema#"` for tool compatibility
+
+**New endpoint:**
+- `GET /api/commands` → `{ count: 33, commandNames: [...], schema: { ... JSON Schema ... } }`
+
+**Validation gate:**
+- `pnpm run typecheck` — TODO this turn
+- `pnpm run build:server` — TODO this turn
+- `pnpm run smoke:commands-schema` — TODO this turn

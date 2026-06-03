@@ -18,6 +18,7 @@ import { log } from "./log.js";
 import { metrics, renderPrometheus } from "./metrics.js";
 import { parseIncomingContext, type RequestContext } from "./request-context.js";
 import { listFeatureFlags } from "./feature-flags.js";
+import { getCommandsSchema, listCommandNames } from "./commands-schema.js";
 
 // When OMNI_DISABLE_CLIENT_ASSETS=1, the fallthrough returns 404 instead of
 // serving static client assets. Used in cloud mode where there is no client.
@@ -177,6 +178,19 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
         // current state of every OMNI_FEATURE_* env var.
         if ((method === "GET" || method === "HEAD") && url.pathname === "/api/features") {
           return writeJson(response, 200, { features: listFeatureFlags() });
+        }
+
+        // Wave 2 Task 9: commands JSON Schema dump. No auth — read-only
+        // introspection of the API surface so dashboards + clients can
+        // validate their payloads without parsing the TS source. The
+        // schema covers all 33 commands (10 original + 14 high-level
+        // wrappers + 6 AI helpers + 3 CAPTCHA commands).
+        if ((method === "GET" || method === "HEAD") && url.pathname === "/api/commands") {
+          return writeJson(response, 200, {
+            commandNames: listCommandNames(),
+            count: listCommandNames().length,
+            schema: getCommandsSchema(),
+          });
         }
 
         if (method === "GET" && url.pathname === "/api/sessions") {

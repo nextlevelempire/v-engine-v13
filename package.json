@@ -43,7 +43,8 @@
     "smoke:ai-helpers": "tsx tests/ai-helpers-smoke.ts",
     "smoke:captcha": "tsx tests/captcha-smoke.ts",
     "smoke:stealth": "tsx tests/stealth-smoke.ts",
-    "smoke:typed-errors-2": "tsx tests/typed-errors-2-smoke.ts"
+    "smoke:typed-errors-2": "tsx tests/typed-errors-2-smoke.ts",
+    "smoke:commands-schema": "tsx tests/commands-schema-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",
