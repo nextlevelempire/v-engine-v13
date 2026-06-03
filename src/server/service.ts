@@ -17,8 +17,11 @@ import {
 import { prepareDirectiveForModel, validateAssistantReply } from "./model-guard.js";
 import { isAgentLoopEnabled, runAgentLoop } from "../runtime/omni-agent-loop.js";
 import { vaultFill, storeCredential, listCredentials, isVaultConfigured } from "../runtime/credential-vault.js";
-import { fillTotp, generateTotp } from "../runtime/totp-generator.js";
+import { fillTotp } from "../runtime/totp-generator.js";
 import { navigateEmail } from "../runtime/email-navigator.js";
+import { runSearch, type SearchEngine } from "../runtime/search-service.js";
+import { runShellCommand } from "../runtime/shell-executor.js";
+import { runParallelTasks, defaultMaxParallel } from "../runtime/parallel-executor.js";
 import {
   syncArtifactRecord,
   syncGuardrailIncident,
@@ -142,7 +145,11 @@ export type SessionCommand =
   | { type: "vault_fill_totp"; hostname: string }
   | { type: "vault_store"; hostname: string; username: string; password: string; totpSecret?: string; notes?: string }
   | { type: "vault_list" }
-  | { type: "email"; action: "compose" | "reply" | "read_inbox"; to?: string; subject?: string; body?: string; thread_url?: string };
+  | { type: "email"; action: "compose" | "reply" | "read_inbox"; to?: string; subject?: string; body?: string; thread_url?: string }
+  // ── Tier 3: Power commands ──
+  | { type: "search"; query: string; engine?: SearchEngine; num_results?: number }
+  | { type: "shell"; command: string; timeout_ms?: number }
+  | { type: "parallel"; tasks: string[]; max_concurrency?: number; credit_budget_per_task?: number };
 
 /** Wave 2 Task 5: shape of a step the AI can submit in execute_plan / next_step. */
 export type PlannedStepInput = {
@@ -496,6 +503,27 @@ export class OmniStandaloneService {
             ? { action: "reply" as const, thread_url: command.thread_url ?? "", body: command.body ?? "" }
             : { action: "read_inbox" as const };
         result = await navigateEmail(page, emailInput);
+        break;
+      }
+      // ── Tier 3: Power commands ─────────────────────────────────────────────
+      case "search": {
+        const page = await record.core.ensurePage();
+        result = { ...(await runSearch(page, command.query, command.engine ?? "google", command.num_results ?? 10)) };
+        break;
+      }
+      case "shell": {
+        result = { ...(await runShellCommand(command.command, command.timeout_ms ?? 10_000)) };
+        break;
+      }
+      case "parallel": {
+        const tasks = command.tasks.map((t) => ({ directive: t }));
+        result = { ...(await runParallelTasks(
+          tasks,
+          command.max_concurrency ?? defaultMaxParallel(),
+          record.orgId ?? "default",
+          record.userId ?? "default",
+          command.credit_budget_per_task ?? 10,
+        )) };
         break;
       }
       default:
@@ -2024,6 +2052,12 @@ function describeCommandForActionLog(command: SessionCommand): string {
       return "vault_list";
     case "email":
       return `email.${command.action}${command.to ? ` → ${command.to}` : ""}`;
+    case "search":
+      return `search "${command.query.slice(0, 60)}" via ${command.engine ?? "google"}`;
+    case "shell":
+      return `shell: ${command.command.slice(0, 60)}`;
+    case "parallel":
+      return `parallel(${command.tasks.length} tasks, concurrency=${command.max_concurrency ?? defaultMaxParallel()})`;
     default:
       return assertNever(command);
   }
