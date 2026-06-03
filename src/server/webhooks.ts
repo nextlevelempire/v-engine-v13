@@ -17,7 +17,6 @@
 
 import crypto from "node:crypto";
 import { log } from "./log.js";
-import { metrics } from "./metrics.js";
 
 const WEBHOOK_URL = process.env.OMNI_WEBHOOK_URL?.trim() || null;
 const WEBHOOK_SECRET = process.env.OMNI_WEBHOOK_SECRET?.trim() || null;
@@ -106,7 +105,6 @@ async function deliverWithRetry(event: WebhookEvent): Promise<void> {
     finalStatus: lastResult?.status ?? 0,
     type: event.type,
   });
-  metrics.rateLimitedTotal.inc({ scope: "webhook_exhausted" });
 }
 
 /**

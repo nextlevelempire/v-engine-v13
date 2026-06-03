@@ -15,7 +15,6 @@ import {
   OmniPayloadTooLargeError,
 } from "./omni-errors.js";
 import { log } from "./log.js";
-import { metrics, renderPrometheus } from "./metrics.js";
 import { parseIncomingContext, type RequestContext } from "./request-context.js";
 import { listFeatureFlags } from "./feature-flags.js";
 import { getCommandsSchema, listCommandNames } from "./commands-schema.js";
@@ -33,14 +32,11 @@ const CLIENT_DIST_DIR = path.resolve("dist/client");
 // OMNI_ALLOW_LOOPBACK_CORS=1 (off by default to prevent accidental
 // exposure).
 const LOOPBACK_CORS_ENABLED = (process.env.OMNI_ALLOW_LOOPBACK_CORS ?? "") === "1";
-const DEFAULT_ALLOWED_ORIGINS: string[] = LOOPBACK_CORS_ENABLED
-  ? [
-      "http://127.0.0.1",
-      "http://127.0.0.1:4011",
-      "http://localhost",
-      "http://localhost:4011",
-    ]
-  : [];
+const DEFAULT_ALLOWED_ORIGINS: string[] = [
+  "https://tryomnigpt.com",
+  "https://www.tryomnigpt.com",
+  ...(LOOPBACK_CORS_ENABLED ? ["http://127.0.0.1", "http://localhost"] : []),
+];
 const ALLOWED_ORIGINS = new Set([
   ...DEFAULT_ALLOWED_ORIGINS,
   ...readAllowedOriginsFromEnv(),
@@ -88,20 +84,6 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
     response.setHeader("x-omni-request-id", ctx.requestId);
     response.setHeader("traceparent", ctx.traceparent);
 
-    // Per-request metrics hook (P4-02). Records the final status code
-    // and route label on response finish. Cheap; runs once per request.
-    response.on("finish", () => {
-      const status = String(response.statusCode || 0);
-      const method = request.method || "GET";
-      const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
-      // Normalize the path to its route template (strip dynamic ids).
-      const path = normalizeRoute(url.pathname);
-      metrics.httpRequestsTotal.inc({ method, path, status });
-      if (response.statusCode >= 400) {
-        metrics.httpRequestErrorsTotal.inc({ method, path, status });
-      }
-    });
-
     const handlerDone = (async () => {
       try {
         const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
@@ -115,39 +97,6 @@ export async function startStandaloneServer(port: number = DEFAULT_PORT) {
           // would create a bootstrapping deadlock.
           verifyRequestGrant(request, url, daemonInstanceId, "");
           return writeJson(response, 200, buildHealthPayload(port, daemonInstanceId));
-        }
-
-        // K8s-style liveness/readiness probes (P8-01). No auth required —
-        // these are infrastructure endpoints, not API endpoints. /livez
-        // is a process-alive check (always 200 if Node is responding).
-        // /readyz returns 200 only if the runtime can serve traffic
-        // (no shutdown in progress, daemon instance is initialized).
-        if ((method === "GET" || method === "HEAD") && url.pathname === "/livez") {
-          return writeJson(response, 200, { ok: true, status: "live" });
-        }
-        if ((method === "GET" || method === "HEAD") && url.pathname === "/readyz") {
-          if (process.env.OMNI_SHUTTING_DOWN === "1") {
-            return writeJson(response, 503, { ok: false, status: "shutting_down" });
-          }
-          return writeJson(response, 200, { ok: true, status: "ready" });
-        }
-        if ((method === "GET" || method === "HEAD") && url.pathname === "/healthz") {
-          // Alias for /livez + /api/health union — kept for ops familiarity.
-          return writeJson(response, 200, { ok: true, status: "live" });
-        }
-
-        // Prometheus exposition (P4-02). No auth required — this is an
-        // infrastructure scrape endpoint, like the healthz probes.
-        // Disable with OMNI_METRICS_DISABLED=1 if you don't want to
-        // expose internal counters.
-        if ((method === "GET" || method === "HEAD") && url.pathname === "/metrics") {
-          if ((process.env.OMNI_METRICS_DISABLED ?? "") === "1") {
-            return writeJson(response, 404, { ok: false, error: "metrics disabled" });
-          }
-          const body = renderPrometheus();
-          response.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });
-          response.end(body);
-          return;
         }
 
         if (method === "POST" && url.pathname === "/api/runtime/attach") {
