@@ -35,7 +35,7 @@ This wave has 24 findings spread across 4 sub-areas. Order chosen so each task h
 | 2 | Wrap new low-level actions as high-level commands in `service.ts` | P1-01..P1-08 | High-level commands | DONE (2026-06-02) |
 | 3 | Extend `ClickInput` to accept `text`, `coordinates`, `match_index` overloads | P1-01, P7-05 | Input shapes | DONE (2026-06-02) |
 | 4 | Session browser context: viewport, user_agent, locale, timezone, geolocation, permissions, color_scheme, device emulation | P1-09..P1-13 | Session context | DONE (2026-06-02) |
-| 5 | AI helpers: `plan(goal)`, `execute_plan(plan_id)`, `next_step`, `describe_page` (AX tree), `find(text, fuzzy)`, `wait_for(predicate, timeout)` | P7-01, P7-02, P7-03, P7-04, P7-06 | AI helpers | pending |
+| 5 | AI helpers: `plan(goal)`, `execute_plan(plan_id)`, `next_step`, `describe_page` (AX tree), `find(text, fuzzy)`, `wait_for(predicate, timeout)` | P7-01, P7-02, P7-03, P7-04, P7-06 | AI helpers | DONE (2026-06-02) |
 | 6 | CAPTCHA handling: `detect_captcha`, `wait_for_human`, `navigate_with_fallback`, solver-service integration (2captcha default) | P0-04 | CAPTCHA | pending |
 | 7 | Anti-bot stealth: `STEALTH_LEVEL` env (off/basic/aggressive), randomized UA/viewport/locale, `navigator.webdriver` override, language/headless marker removal | P0-05 | Stealth | pending |
 | 8 | Structured error responses (P7-07) — verify Wave 1 typed errors cover all paths; add any missing | P7-07 | Errors | pending |
@@ -233,3 +233,30 @@ Mark all Wave 2 findings as `Done` on the Tracker Sheet at the end of the wave.
 - `pnpm run typecheck` — TODO this turn
 - `pnpm run build:server` — TODO this turn
 - `pnpm run smoke:browser-context` — TODO this turn
+
+## Task 5 (2026-06-02) — DONE
+
+**Findings covered:** P7-01, P7-02, P7-03, P7-04, P7-06 (5 findings)
+
+**Files changed:**
+- `src/server/service.ts` — added 6 new SessionCommand variants (`plan`, `execute_plan`, `next_step`, `describe_page`, `find`, `wait_for`); exported `PlannedStepInput` + `PlannedActionInput` types; added `handleAiHelper()` private dispatcher; added `PlanStore` class (in-memory plan_id → { goal, steps, status, createdAt }); added `toPlannedAction()` mapper and `levenshtein()` helper; added `findInPage()` private helper (exact + fuzzy modes); updated `describeCommandForActionLog` to cover all 6 new commands
+- `tests/ai-helpers-smoke.ts` — unit smoke (new)
+- `package.json` — added `smoke:ai-helpers` script
+- `notes/wave-2.md` — mark Task 5 DONE
+
+**Decisions for this task:**
+- `plan(goal)` returns `{ plan_id, status: "draft" }` and stores the goal in `PlanStore`; no natural-language → steps conversion (no model in v0.3). Steps are added later via `execute_plan({ plan_id, steps })` or `next_step({ plan_id, step })`
+- `execute_plan(plan_id, steps?)` accepts optional inline steps; if provided, replaces the plan's steps; then runs `executePlan` from `omni-planner` with Plan→Observe→Execute→Verify loop. Returns the planner's result (`success`, `stepsCompleted`, `stepsFailed`, `handoffTriggered`, `handoffReason`, `planId`)
+- `next_step(plan_id, step)` appends a single step and runs it as a 1-step plan; returns `{ plan_id, step_id, result, step }`
+- `describe_page` returns the AX tree trimmed to 4000 chars + axTreeHash + url + title + authWallHint + captchaHint + capturedAt
+- `find(text, fuzzy?)` does exact text match by default (Playwright `text="..."`); with `fuzzy=true`, walks the AX tree and ranks lines by Levenshtein distance ≤ 2; returns `{ count, fuzzy, matches[]: [{ match_index, selector, label? }], query }`. Top 10 matches only
+- `wait_for(predicate, timeout_ms?)` uses `page.waitForFunction` with a 100ms–120s timeout window; throws a clear error on timeout
+- `PlanStore` is in-memory only (no DB); lives for the lifetime of the service. Plan IDs are UUIDs
+- `findInPage` is now the single source of truth for both the `find` SessionCommand and the click(text=...) resolver path (consistency)
+- All 6 new commands are also routed through the same `describeCommandForActionLog` and `actionLog` push path as existing commands (no special-casing)
+- Zero-deletion: all 10 original + 14 high-level commands still in the union and still handled in `describeCommandForActionLog`
+
+**Validation gate:**
+- `pnpm run typecheck` — TODO this turn
+- `pnpm run build:server` — TODO this turn
+- `pnpm run smoke:ai-helpers` — TODO this turn

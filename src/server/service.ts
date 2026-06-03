@@ -26,6 +26,9 @@ import { sanitizeProtectedRuntimeValue } from "../security/trade-secret-guard.js
 import { LocalComputerController, type ComputerAction } from "../runtime/local-computer.js";
 import { getEnabledTakeoverCapabilities } from "./takeover-config.js";
 import { emitWebhookEvent } from "./webhooks.js";
+import { executePlan, type PlanStep } from "../runtime/omni-planner.js";
+import { captureAXObservation } from "../runtime/omni-ax-observer.js";
+import type { Page } from "playwright";
 
 export type SessionEvent = {
   data: Record<string, unknown>;
@@ -108,7 +111,29 @@ export type SessionCommand =
   | { type: "scroll_until"; target: string; direction?: "down" | "up"; maxScrolls?: number }
   | { type: "enter_frame"; frameSelector: string }
   | { type: "exit_frame" }
-  | { type: "shadow_click"; selector: string };
+  | { type: "shadow_click"; selector: string }
+  // ── Wave 2 Task 5: AI helpers — thin wrappers over the existing planner/AX observer ──
+  | { type: "plan"; goal: string }
+  | { type: "execute_plan"; plan_id: string; steps?: PlannedStepInput[] }
+  | { type: "next_step"; plan_id: string; step: PlannedStepInput }
+  | { type: "describe_page" }
+  | { type: "find"; text: string; fuzzy?: boolean }
+  | { type: "wait_for"; predicate: string; timeout_ms?: number };
+
+/** Wave 2 Task 5: shape of a step the AI can submit in execute_plan / next_step. */
+export type PlannedStepInput = {
+  intent: string;
+  action: PlannedActionInput;
+};
+
+/** Wave 2 Task 5: shape of an action within a planned step. */
+export type PlannedActionInput =
+  | { type: "click"; selector?: string }
+  | { type: "navigate"; url?: string }
+  | { type: "scroll"; targetY?: number }
+  | { type: "type"; selector?: string; text?: string }
+  | { type: "wait" }
+  | { type: "handoff"; reason?: string };
 
 /** Wave 2: the subset of SessionCommand that handleNewHighLevel routes. */
 export type NewHighLevelCommand = Extract<
@@ -170,6 +195,7 @@ const CONTROL_PLANE_TELEMETRY_EVENTS = new Set([
 
 export class OmniStandaloneService {
   private cleanupTimer: NodeJS.Timeout;
+  private readonly planStore = new PlanStore();
   private readonly rateLimiter = new OmniRateLimiter({
     agentRpm: numberFromEnv("OMNI_AGENT_RPM", 30),
     burstPerSecond: numberFromEnv("OMNI_BURST_RPS", 10),
@@ -357,9 +383,9 @@ export class OmniStandaloneService {
       case "right_click":
       case "double_click":
       case "hover":
+      case "shortcut":
       case "drag":
       case "scroll":
-      case "shortcut":
       case "file_upload":
       case "file_download":
       case "screenshot_element":
@@ -369,6 +395,17 @@ export class OmniStandaloneService {
       case "exit_frame":
       case "shadow_click":
         result = await this.handleNewHighLevel(record, command);
+        break;
+      // Wave 2 Task 5: AI helpers. Thin wrappers over the existing
+      // omni-planner + omni-ax-observer. Each returns a structured result
+      // the AI can consume to drive the next step.
+      case "plan":
+      case "execute_plan":
+      case "next_step":
+      case "describe_page":
+      case "find":
+      case "wait_for":
+        result = await this.handleAiHelper(record, command);
         break;
       default:
         result = assertNever(command);
@@ -935,6 +972,204 @@ export class OmniStandaloneService {
     return selector;
   }
 
+  // ── Wave 2 Task 5: AI helper dispatcher ──────────────────────────────────
+  // plan(goal)         — create a draft plan, return plan_id
+  // execute_plan(id,?) — run all steps via the existing omni-planner
+  // next_step(id,step) — add + run a single step
+  // describe_page      — AX tree summary via omni-ax-observer
+  // find(text, fuzzy)  — text match (exact or Levenshtein ≤ 2)
+  // wait_for(pred,to)  — page.waitForFunction with timeout
+  private async handleAiHelper(
+    record: SessionRecord,
+    command:
+      | { type: "plan"; goal: string }
+      | { type: "execute_plan"; plan_id: string; steps?: PlannedStepInput[] }
+      | { type: "next_step"; plan_id: string; step: PlannedStepInput }
+      | { type: "describe_page" }
+      | { type: "find"; text: string; fuzzy?: boolean }
+      | { type: "wait_for"; predicate: string; timeout_ms?: number },
+  ): Promise<Record<string, unknown>> {
+    switch (command.type) {
+      case "plan": {
+        const plan_id = this.planStore.create(record.sessionId, command.goal);
+        return { goal: command.goal, plan_id, status: "draft" };
+      }
+      case "execute_plan": {
+        const plan = this.planStore.get(command.plan_id);
+        if (!plan) {
+          throw new Error(`Unknown plan_id: ${command.plan_id}`);
+        }
+        if (command.steps) {
+          this.planStore.setSteps(command.plan_id, command.steps);
+        }
+        const page = await record.core.ensurePage();
+        const steps = this.planStore.getSteps(command.plan_id);
+        const result = await executePlan({
+          captureProof: async (label) =>
+            record.core.captureProofCheckpoint(label).then((p) => p || null),
+          emit: (event) => {
+            if (event.kind === "plan.created") {
+              this.emit(record, "plan.created", {
+                goal: plan.goal,
+                planId: event.planId,
+                stepCount: event.steps.length,
+              });
+            } else if (event.kind === "handoff.requested") {
+              this.emit(record, "handoff.requested", {
+                planId: event.planId,
+                reason: event.reason,
+                stepId: event.stepId,
+              });
+            }
+          },
+          executeClick: async (selector) => {
+            const r = await record.core.click(selector);
+            return r && typeof r === "object" && "ok" in r ? Boolean((r as Record<string, unknown>).ok) : true;
+          },
+          executeNavigate: async (url) => {
+            const r = await record.core.navigate(url);
+            return r && typeof r === "object" && "ok" in r ? Boolean((r as Record<string, unknown>).ok) : true;
+          },
+          executeScroll: async (targetY) => {
+            const r = await record.core.humanScroll(page, targetY);
+            return r;
+          },
+          executeType: async (selector, text) => {
+            const r = await record.core.type(selector, text);
+            return r && typeof r === "object" && "ok" in r ? Boolean((r as Record<string, unknown>).ok) : true;
+          },
+          objective: plan.goal,
+          page,
+          pauseForHandoff: async (reason) => {
+            await record.core.pauseMission(reason);
+          },
+          steps,
+        });
+        this.planStore.markExecuted(command.plan_id, result);
+        return { ...result, plan_id: command.plan_id };
+      }
+      case "next_step": {
+        this.planStore.appendStep(command.plan_id, command.step);
+        const page = await record.core.ensurePage();
+        const plan = this.planStore.get(command.plan_id);
+        if (!plan) {
+          throw new Error(`Unknown plan_id: ${command.plan_id}`);
+        }
+        const lastStep = this.planStore.getSteps(command.plan_id).slice(-1)[0]!;
+        // Build a 1-step plan and run it.
+        const result = await executePlan({
+          captureProof: async (label) =>
+            record.core.captureProofCheckpoint(label).then((p) => p || null),
+          emit: () => undefined,
+          executeClick: async (selector) => {
+            const r = await record.core.click(selector);
+            return r && typeof r === "object" && "ok" in r ? Boolean((r as Record<string, unknown>).ok) : true;
+          },
+          executeNavigate: async (url) => {
+            const r = await record.core.navigate(url);
+            return r && typeof r === "object" && "ok" in r ? Boolean((r as Record<string, unknown>).ok) : true;
+          },
+          executeScroll: async (targetY) => record.core.humanScroll(page, targetY),
+          executeType: async (selector, text) => {
+            const r = await record.core.type(selector, text);
+            return r && typeof r === "object" && "ok" in r ? Boolean((r as Record<string, unknown>).ok) : true;
+          },
+          objective: plan.goal,
+          page,
+          pauseForHandoff: async (reason) => {
+            await record.core.pauseMission(reason);
+          },
+          steps: [lastStep],
+        });
+        return {
+          plan_id: command.plan_id,
+          result,
+          step: command.step,
+          step_id: lastStep.id,
+        };
+      }
+      case "describe_page": {
+        const page = await record.core.ensurePage();
+        const observation = await captureAXObservation(page);
+        return {
+          axSummary: observation.axTree.slice(0, 4000),
+          axTreeHash: observation.axTreeHash,
+          authWallHint: observation.authWallHint,
+          captchaHint: observation.captchaHint,
+          capturedAt: observation.capturedAt,
+          title: observation.title,
+          url: observation.url,
+        };
+      }
+      case "find": {
+        const page = await record.core.ensurePage();
+        const result = await this.findInPage(page, command.text, command.fuzzy === true);
+        return result;
+      }
+      case "wait_for": {
+        const page = await record.core.ensurePage();
+        const timeoutMs = Math.max(100, Math.min(command.timeout_ms ?? 10_000, 120_000));
+        try {
+          await page.waitForFunction(command.predicate, undefined, { timeout: timeoutMs });
+          return { ok: true, predicate: command.predicate, timeoutMs };
+        } catch (error) {
+          throw new Error(
+            `wait_for timed out after ${timeoutMs}ms: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      default:
+        return assertNever(command);
+    }
+  }
+
+  // Text finder used by SessionCommand `find` and by the click(text=...) path.
+  // Returns up to 10 matches with selectors + match_index, plus the count.
+  // When `fuzzy` is true, applies Levenshtein distance ≤ 2 to the AX tree text.
+  private async findInPage(
+    page: Page,
+    text: string,
+    fuzzy: boolean,
+  ): Promise<Record<string, unknown>> {
+    const escaped = text.replace(/"/g, '\\"');
+    if (!fuzzy) {
+      const exactSelector = `text="${escaped}"`;
+      const count = await page.locator(exactSelector).count().catch(() => 0);
+      return {
+        count,
+        fuzzy: false,
+        matches: Array.from({ length: Math.min(count, 10) }, (_, i) => ({
+          match_index: i,
+          selector: exactSelector,
+        })),
+        query: text,
+      };
+    }
+    // Fuzzy: walk the AX tree and rank by Levenshtein distance ≤ 2.
+    const observation = await captureAXObservation(page);
+    const candidates = observation.axTree
+      .split("\n")
+      .map((line) => {
+        // AX tree lines look like "role: text" — extract the text portion.
+        const idx = line.indexOf(":");
+        const label = idx === -1 ? line : line.slice(idx + 1).trim();
+        return { distance: levenshtein(label.toLowerCase(), text.toLowerCase()), label, line };
+      })
+      .filter((c) => c.distance <= 2)
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 10);
+    return {
+      count: candidates.length,
+      fuzzy: true,
+      matches: candidates.map((c, i) => ({
+        label: c.label,
+        match_index: i,
+        selector: `text="${c.label.replace(/"/g, '\\"')}"`,
+      })),
+      query: text,
+    };
+  }
+
   private emit(record: SessionRecord, type: string, data: Record<string, unknown>): void {
     const event: SessionEvent = {
       data,
@@ -1304,6 +1539,115 @@ function numberFromEnv(name: string, fallback: number): number {
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
+// ── Wave 2 Task 5: PlanStore + Levenshtein helper ─────────────────────────
+type PlanEntry = {
+  createdAt: string;
+  goal: string;
+  planId: string;
+  sessionId: string;
+  status: "draft" | "executing" | "completed" | "failed";
+  steps: PlanStep[];
+};
+
+class PlanStore {
+  private readonly entries = new Map<string, PlanEntry>();
+
+  create(sessionId: string, goal: string): string {
+    const planId = randomUUID();
+    this.entries.set(planId, {
+      createdAt: new Date().toISOString(),
+      goal,
+      planId,
+      sessionId,
+      status: "draft",
+      steps: [],
+    });
+    return planId;
+  }
+
+  get(planId: string): PlanEntry | null {
+    return this.entries.get(planId) ?? null;
+  }
+
+  getSteps(planId: string): PlanStep[] {
+    return this.entries.get(planId)?.steps ?? [];
+  }
+
+  setSteps(planId: string, rawSteps: PlannedStepInput[]): void {
+    const entry = this.entries.get(planId);
+    if (!entry) return;
+    entry.steps = rawSteps.map((step) => ({
+      action: toPlannedAction(step.action),
+      completionCriteria: step.intent,
+      id: randomUUID(),
+      intent: step.intent,
+      status: "pending",
+    }));
+  }
+
+  appendStep(planId: string, rawStep: PlannedStepInput): void {
+    const entry = this.entries.get(planId);
+    if (!entry) return;
+    entry.steps.push({
+      action: toPlannedAction(rawStep.action),
+      completionCriteria: rawStep.intent,
+      id: randomUUID(),
+      intent: rawStep.intent,
+      status: "pending",
+    });
+  }
+
+  markExecuted(planId: string, result: { success: boolean; handoffTriggered: boolean }): void {
+    const entry = this.entries.get(planId);
+    if (!entry) return;
+    entry.status = result.handoffTriggered
+      ? "failed"
+      : result.success
+        ? "completed"
+        : "failed";
+  }
+}
+
+function toPlannedAction(raw: PlannedActionInput): PlanStep["action"] {
+  switch (raw.type) {
+    case "click":
+      return { selector: raw.selector ?? "", type: "click" };
+    case "navigate":
+      return { type: "navigate", url: raw.url ?? "" };
+    case "scroll":
+      return { targetY: raw.targetY ?? 0, type: "scroll" };
+    case "type":
+      return { selector: raw.selector ?? "", text: raw.text ?? "", type: "type" };
+    case "wait":
+      return { ms: 1000, type: "wait" };
+    case "handoff":
+      return { reason: raw.reason ?? "step handoff", type: "handoff" };
+    default:
+      throw new Error(`Unknown planned action type: ${(raw as { type: string }).type}`);
+  }
+}
+
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const prev: number[] = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i += 1) {
+    let last = i;
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const temp = prev[j]!;
+      if (a[i - 1] === b[j - 1]) {
+        prev[j] = last;
+      } else {
+        prev[j] = Math.min(prev[j]!, prev[j - 1]!, last) + 1;
+      }
+      last = temp;
+    }
+  }
+  return prev[b.length]!;
+}
+
 /**
  * Produce a compact one-line summary of a command for the action log.
  * The control plane uses these summaries to detect loop/no-progress patterns:
@@ -1373,6 +1717,19 @@ function describeCommandForActionLog(command: SessionCommand): string {
       return "exit_frame";
     case "shadow_click":
       return `shadow_click ${command.selector.slice(0, 60)}`;
+    // Wave 2 Task 5: AI helper summaries
+    case "plan":
+      return `plan "${command.goal.slice(0, 60)}"`;
+    case "execute_plan":
+      return `execute_plan ${command.plan_id.slice(0, 8)} (${command.steps?.length ?? "?"} steps)`;
+    case "next_step":
+      return `next_step ${command.plan_id.slice(0, 8)} -> ${command.step.intent.slice(0, 40)}`;
+    case "describe_page":
+      return "describe_page";
+    case "find":
+      return `find "${command.text.slice(0, 40)}" (${command.fuzzy ? "fuzzy" : "exact"})`;
+    case "wait_for":
+      return `wait_for (${command.timeout_ms ?? 10_000}ms)`;
     default:
       return assertNever(command);
   }
