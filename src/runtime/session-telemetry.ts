@@ -97,7 +97,7 @@ export class SessionTelemetryStore {
     const buf = this.getOrCreate(sessionId);
     buf.console.unshift(entry);
     if (buf.console.length > this.size) {
-      buf.console.length = this.size;
+      buf.console.pop();
     }
   }
 
@@ -105,7 +105,7 @@ export class SessionTelemetryStore {
     const buf = this.getOrCreate(sessionId);
     buf.network.unshift(entry);
     if (buf.network.length > this.size) {
-      buf.network.length = this.size;
+      buf.network.pop();
     }
   }
 
@@ -140,10 +140,11 @@ export function attachTelemetryListeners(page: Page, sessionId: string): void {
   }
   (page as unknown as Record<string, unknown>)[flagKey] = true;
 
-  page.on("console", (msg: ConsoleMessage) => {
+  page.on("console", async (msg: ConsoleMessage) => {
     try {
+      const args = await Promise.all(msg.args().map((arg) => arg.jsonValue().catch(() => "[unserializable]")));
       const entry: CapturedConsoleEntry = {
-        args: msg.args().map((arg) => safeArgToJson(arg)),
+        args,
         location: msg.location() ?? { columnNumber: 0, lineNumber: 0, url: "" },
         sessionId,
         text: msg.text(),
@@ -211,17 +212,4 @@ export function attachTelemetryListeners(page: Page, sessionId: string): void {
       // best-effort
     }
   });
-}
-
-function safeArgToJson(arg: { jsonValue(): Promise<unknown> }): unknown {
-  try {
-    // jsonValue can throw for non-serializable values (DOM nodes, etc.)
-    const value = arg.jsonValue();
-    if (value && typeof (value as Promise<unknown>).then === "function") {
-      return "[async]";
-    }
-    return value;
-  } catch {
-    return "[unserializable]";
-  }
 }

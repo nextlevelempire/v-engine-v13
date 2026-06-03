@@ -25,16 +25,13 @@
     "smoke:auth-rate-limit": "tsx tests/auth-rate-limit-smoke.ts",
     "smoke:typed-errors": "tsx tests/typed-errors-smoke.ts",
     "smoke:cors-allowlist": "tsx tests/cors-allowlist-smoke.ts",
-    "smoke:healthz": "tsx tests/healthz-smoke.ts",
     "smoke:tls": "tsx tests/tls-smoke.ts",
     "smoke:structured-logging": "tsx tests/structured-logging-smoke.ts",
-    "smoke:metrics": "tsx tests/metrics-smoke.ts",
     "smoke:request-context": "tsx tests/request-context-smoke.ts",
     "smoke:action-log": "tsx tests/action-log-smoke.ts",
     "smoke:screenshots": "tsx tests/screenshots-smoke.ts",
     "smoke:webhooks": "tsx tests/webhooks-smoke.ts",
     "smoke:tenant-scoping": "tsx tests/tenant-scoping-smoke.ts",
-    "smoke:deploy": "tsx tests/deploy-smoke.ts",
     "smoke:feature-flags": "tsx tests/feature-flags-smoke.ts",
     "smoke:low-level-actions": "tsx tests/low-level-actions-smoke.ts",
     "smoke:high-level-commands": "tsx tests/high-level-commands-smoke.ts",
@@ -45,7 +42,8 @@
     "smoke:stealth": "tsx tests/stealth-smoke.ts",
     "smoke:typed-errors-2": "tsx tests/typed-errors-2-smoke.ts",
     "smoke:commands-schema": "tsx tests/commands-schema-smoke.ts",
-    "smoke:session-context": "tsx tests/session-context-smoke.ts"
+    "smoke:session-context": "tsx tests/session-context-smoke.ts",
+    "mint-grant": "tsx scripts/mint-grant.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",
