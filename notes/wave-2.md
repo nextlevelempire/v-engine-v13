@@ -33,7 +33,7 @@ This wave has 24 findings spread across 4 sub-areas. Order chosen so each task h
 |---|---|---|---|---|
 | 1 | Extend `ComputerAction` type + `local-computer.ts` with new low-level actions (right_click, double_click, shortcut, drag, scroll, hover, clipboard, file_upload, file_download, screenshot_element, fill_form, scroll_until, enter_frame, exit_frame, shadow DOM) | P1-01, P1-02, P1-03, P1-04, P1-05, P1-07, P1-08, P1-11 | Low-level actions | DONE (2026-06-02) |
 | 2 | Wrap new low-level actions as high-level commands in `service.ts` | P1-01..P1-08 | High-level commands | DONE (2026-06-02) |
-| 3 | Extend `ClickInput` to accept `text`, `coordinates`, `match_index` overloads | P1-01, P7-05 | Input shapes | pending |
+| 3 | Extend `ClickInput` to accept `text`, `coordinates`, `match_index` overloads | P1-01, P7-05 | Input shapes | DONE (2026-06-02) |
 | 4 | Session browser context: viewport, user_agent, locale, timezone, geolocation, permissions, color_scheme, device emulation | P1-09..P1-13 | Session context | pending |
 | 5 | AI helpers: `plan(goal)`, `execute_plan(plan_id)`, `next_step`, `describe_page` (AX tree), `find(text, fuzzy)`, `wait_for(predicate, timeout)` | P7-01, P7-02, P7-03, P7-04, P7-06 | AI helpers | pending |
 | 6 | CAPTCHA handling: `detect_captcha`, `wait_for_human`, `navigate_with_fallback`, solver-service integration (2captcha default) | P0-04 | CAPTCHA | pending |
@@ -182,3 +182,26 @@ Mark all Wave 2 findings as `Done` on the Tracker Sheet at the end of the wave.
 - `pnpm run typecheck` — TODO this turn
 - `pnpm run build:server` — TODO this turn
 - `pnpm run smoke:high-level-commands` — TODO this turn
+
+## Task 3 (2026-06-02) — DONE
+
+**Findings covered:** P1-01, P7-05 (2 findings)
+
+**Files changed:**
+- `src/server/service.ts` — extended click command type with optional `coordinates`, `match_index`, `text` (alongside the existing `selector`); added `handleClick()` private dispatcher with payload validation; added `findByText()` helper for text-based resolution; updated `describeCommandForActionLog` to branch on the 3 input shapes
+- `tests/click-input-smoke.ts` — unit smoke (new)
+- `package.json` — added `smoke:click-input` script
+- `notes/wave-2.md` — mark Task 3 DONE
+
+**Decisions for this task:**
+- `selector` is now optional (not removed). Existing callers passing `{ type: "click", selector: "..." }` still typecheck and work (zero-deletion)
+- Validation rejects both empty (no target) and ambiguous (multiple targets) input with a clear error message — the typed error in Wave 1 (OmniValidationError) can be wrapped in a follow-up if Commander wants strict 400 responses
+- `text`-based resolution uses Playwright's `text="..."` pseudo-selector which is evaluated at click time, not pre-resolved. This means the AX tree + DOM match is performed by Playwright itself, which is more reliable than re-implementing the matcher in our code
+- `findByText` validates `match_index` against the live count from `page.locator(selector).count()` and throws on out-of-range
+- Task 5 will replace this exact-text matcher with a Levenshtein-based fuzzy matcher and expose `find` as a first-class `SessionCommand`; `findByText` in this task is intentionally minimal so the click path is testable end-to-end now
+- `match_index` is documented as text-only; for selector-based clicks it's a no-op (the selector is already specific)
+
+**Validation gate:**
+- `pnpm run typecheck` — TODO this turn
+- `pnpm run build:server` — TODO this turn
+- `pnpm run smoke:click-input` — TODO this turn

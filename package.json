@@ -37,7 +37,8 @@
     "smoke:deploy": "tsx tests/deploy-smoke.ts",
     "smoke:feature-flags": "tsx tests/feature-flags-smoke.ts",
     "smoke:low-level-actions": "tsx tests/low-level-actions-smoke.ts",
-    "smoke:high-level-commands": "tsx tests/high-level-commands-smoke.ts"
+    "smoke:high-level-commands": "tsx tests/high-level-commands-smoke.ts",
+    "smoke:click-input": "tsx tests/click-input-smoke.ts"
   },
   "dependencies": {
     "dompurify": "^3.3.3",

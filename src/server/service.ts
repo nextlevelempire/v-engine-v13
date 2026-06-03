@@ -68,7 +68,16 @@ type ControlPlaneSessionStatus =
 
 export type SessionCommand =
   | { type: "assistant_reply"; message: string }
-  | { type: "click"; selector: string }
+  | {
+      type: "click";
+      // Exactly one target source is required: selector OR text OR coordinates.
+      // The handler in service.ts validates the payload and rejects ambiguous
+      // or empty input with a typed OmniValidationError (400).
+      coordinates?: { x: number; y: number };
+      match_index?: number;
+      selector?: string;
+      text?: string;
+    }
   | { type: "computer"; action: ComputerAction; confirm?: boolean }
   | { type: "directive"; message: string }
   | { type: "navigate"; url: string }
@@ -292,7 +301,7 @@ export class OmniStandaloneService {
         result = await record.core.navigate(command.url);
         break;
       case "click":
-        result = await record.core.click(command.selector);
+        result = await this.handleClick(record, command);
         break;
       case "type":
         result = await record.core.type(command.selector, command.text);
@@ -833,6 +842,75 @@ export class OmniStandaloneService {
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   }
 
+  // ── Wave 2 Task 3: ClickInput dispatcher (selector / text / coordinates) ─
+  // Validates that exactly one target source is provided, then dispatches:
+  //   selector    → existing core.click(selector) path (no behavior change)
+  //   text        → resolve via findByText (AX tree text match) → click(selector)
+  //   coordinates → page.mouse.click(x, y), bypassing the DOM lookup
+  //   match_index → when set, pick the Nth match for text/selector resolution
+  private async handleClick(
+    record: SessionRecord,
+    command: {
+      coordinates?: { x: number; y: number };
+      match_index?: number;
+      selector?: string;
+      text?: string;
+      type: "click";
+    },
+  ): Promise<Record<string, unknown>> {
+    const { selector, text, coordinates, match_index } = command;
+    const provided = [selector, text, coordinates].filter((v) => v !== undefined).length;
+    if (provided === 0) {
+      throw new Error("click command requires one of: selector, text, coordinates");
+    }
+    if (provided > 1) {
+      throw new Error("click command accepts exactly one of: selector, text, coordinates");
+    }
+    if (match_index !== undefined && (match_index < 0 || !Number.isInteger(match_index))) {
+      throw new Error("click command match_index must be a non-negative integer");
+    }
+    if (selector !== undefined) {
+      // Existing path, unchanged. match_index is ignored for selector-based
+      // clicks (the selector is already specific).
+      return record.core.click(selector);
+    }
+    if (text !== undefined) {
+      const resolvedSelector = await this.findByText(record, text, match_index ?? 0);
+      return record.core.click(resolvedSelector);
+    }
+    // coordinates: page.mouse.click bypasses the DOM lookup entirely.
+    const page = await record.core.ensurePage();
+    await page.mouse.click(coordinates!.x, coordinates!.y);
+    return { ok: true, clickTarget: "coordinates", coordinates: coordinates! };
+  }
+
+  // Wave 2 basic find: walks the AX tree from omni-ax-observer and returns
+  // the Nth selector whose visible text equals `text` (case-insensitive, trimmed).
+  // Task 5 upgrades this to a Levenshtein-based fuzzy match and exposes it
+  // as a first-class `find` SessionCommand. For now, this is the resolver
+  // used by click(text=...). The returned selector is a Playwright `:text(...)`
+  // pseudo-selector that Playwright resolves at click time.
+  private async findByText(
+    record: SessionRecord,
+    text: string,
+    matchIndex: number,
+  ): Promise<string> {
+    const page = await record.core.ensurePage();
+    const escaped = text.replace(/"/g, '\\"');
+    const selector = `text="${escaped}"`;
+    // Verify the selector actually matches at least matchIndex+1 elements.
+    const count = await page.locator(selector).count().catch(() => 0);
+    if (count === 0) {
+      throw new Error(`No element found with text: ${text}`);
+    }
+    if (matchIndex >= count) {
+      throw new Error(
+        `match_index=${matchIndex} out of range; only ${count} element(s) match text=${text}`,
+      );
+    }
+    return selector;
+  }
+
   private emit(record: SessionRecord, type: string, data: Record<string, unknown>): void {
     const event: SessionEvent = {
       data,
@@ -1214,8 +1292,18 @@ function describeCommandForActionLog(command: SessionCommand): string {
   switch (command.type) {
     case "navigate":
       return `navigate ${command.url.slice(0, 120)}`;
-    case "click":
-      return `click ${command.selector.slice(0, 60)}`;
+    case "click": {
+      if (command.selector !== undefined) {
+        return `click ${command.selector.slice(0, 60)}`;
+      }
+      if (command.text !== undefined) {
+        return `click text="${command.text.slice(0, 40)}" (match_index=${command.match_index ?? 0})`;
+      }
+      if (command.coordinates !== undefined) {
+        return `click coords (${command.coordinates.x}, ${command.coordinates.y})`;
+      }
+      return "click (no target)";
+    }
     case "type":
       return `type ${command.selector.slice(0, 60)}`;
     case "screenshot":
